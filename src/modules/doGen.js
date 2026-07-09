@@ -141,7 +141,7 @@ export function buildDOHtml(cfg) {
   </table>
 
   <div class="meta">
-    <b>Estimate Delivery Date :</b> ${estDeliveryDate || '-'}<br>
+    <b>Estimate Delivery Date :</b> ${estDeliveryDate ? fmtDate(estDeliveryDate) : '-'}<br>
     <b>Note :</b> ${note || '-'}
   </div>
 

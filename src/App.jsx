@@ -6,6 +6,7 @@ import Clients from './modules/Clients';
 import SalesRequests from './modules/SalesRequests';
 import DeliveryOrders from './modules/DeliveryOrders';
 import BASTModule from './modules/BASTModule';
+import Settings from './modules/Settings';
 
 // Module registry. Real modules get wired in here as they're built.
 const MODULES = [
@@ -15,6 +16,7 @@ const MODULES = [
   { key: 'do',          label: 'Delivery Orders',icon: '📦', ready: true },
   { key: 'bast',        label: 'BAST',           icon: '📑', ready: true },
   { key: 'stock',       label: 'Stock Cards',    icon: '📊', ready: false },
+  { key: 'settings',    label: 'Settings',       icon: '⚙', ready: true },
 ];
 
 export default function App() {
@@ -27,6 +29,7 @@ export default function App() {
       case 'sales':       return <SalesRequests />;
       case 'do':          return <DeliveryOrders />;
       case 'bast':        return <BASTModule />;
+      case 'settings':    return <Settings />;
       default:
         return (
           <div style={{ color: T.textDim, padding: 40, fontSize: 13 }}>

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { T, s } from '../tokens';
-import { COL, ISSUERS, NODES, formatDoNumber } from '../config';
+import { COL, ISSUERS, NODES, formatDoNumber, formatBastNumber } from '../config';
 import { useCollection } from './useCollection';
 import { allocateNumber } from './counters';
 import { buildDOHtml } from './doGen';
@@ -28,6 +28,7 @@ export default function DeliveryOrders() {
   const doC     = useCollection(COL.deliveryOrders);
   const srC     = useCollection(COL.salesRequests);
   const nodesC  = useCollection(COL.nodes);
+  const bastC   = useCollection(COL.bast);
 
   const [form, setForm]     = useState(null);
   const [editId, setEditId] = useState(null);
@@ -92,17 +93,38 @@ export default function DeliveryOrders() {
         vesselName: form.vesselName,
         items: [{ no: 1, description: form.fuelDescription, qtyLiters: Number(form.dispatchedVolumeL) || 0 }],
         dispatchedVolumeL: Number(form.dispatchedVolumeL) || 0,
-        estDeliveryDate: form.estDeliveryDate,
-        note: form.note,
+        estDeliveryDate: form.estDeliveryDate || '',
+        note: form.note || '-',
         signers: form.signers,
         status: 'issued',
       };
       if (editId) {
         await doC.update(editId, payload);
       } else {
-        await doC.add(payload);
-        // advance the sales request status
+        const doRef = await doC.add(payload);
         if (form.salesRequestId) await srC.update(form.salesRequestId, { status: 'do_issued' });
+        // Auto-create a BLANK BAST alongside the DO (printable pre-bunker; filled after loading).
+        const year = new Date(form.brDate).getFullYear();
+        const bseq = await allocateNumber('bast', year);
+        const nomorBast = formatBastNumber({ seq: bseq, monthIndex: romanMonth(form.brDate), year });
+        const issuerName = ISSUERS[form.issuerKey]?.name || '';
+        await bastC.add({
+          deliveryOrderId: doRef.id,
+          nomorBast,
+          tanggalBast: form.brDate,
+          supplier:    { name: issuerName, deliveryOrder: brNo },
+          penyalur:    { name: issuerName, vesselName: '', doPoSpk: brNo, quantity: String(Number(form.dispatchedVolumeL) || 0) },
+          transportir: { name: ISSUERS.USI_PTS.name, vesselName: '', nakhoda: '' },
+          qty: { volumeDiterima: '', shoreTank: '', fmAwal: '', fmAkhir: '', suhu: '', jamStart: '', jamEnd: '' },
+          transitLossL: null,
+          dispatchedVolumeL: Number(form.dispatchedVolumeL) || 0,
+          signers: {
+            diserahkan: { name: '', role: 'Master / Chef Officer' },
+            diterima:   { name: '', role: '' },
+            diketahui:  { name: '', role: 'SpV USIPTS' },
+          },
+          status: 'blank',   // 'blank' = printed pre-bunker; 'bast_done' = filled post-bunker
+        });
       }
       cancel();
     } catch (e) {
@@ -216,8 +238,8 @@ export default function DeliveryOrders() {
             </div>
             <div>
               <label style={s.label}>Est. Delivery</label>
-              <input style={s.input} value={form.estDeliveryDate} onChange={e => sf('estDeliveryDate', e.target.value)}
-                placeholder="09-Jul-2026 09:25" />
+              <input style={s.input} type="date" value={form.estDeliveryDate}
+                onChange={e => sf('estDeliveryDate', e.target.value)} />
             </div>
           </div>
 

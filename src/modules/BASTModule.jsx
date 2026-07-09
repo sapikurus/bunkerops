@@ -1,8 +1,7 @@
 import { useState } from 'react';
 import { T, s } from '../tokens';
-import { COL, ISSUERS, formatBastNumber, ROMAN } from '../config';
+import { COL, ISSUERS } from '../config';
 import { useCollection } from './useCollection';
-import { allocateNumber } from './counters';
 import { buildBASTHtml } from './bastGen';
 import { USI_LOGO } from './assets';
 
@@ -25,29 +24,8 @@ export default function BASTModule() {
   const [editId, setEditId] = useState(null);
   const [busy, setBusy]     = useState(false);
 
-  // DOs issued but without a BAST yet
-  const bastByDo = new Set(bastC.data.map(b => b.deliveryOrderId));
-  const openDOs = doC.data.filter(d => d.status === 'issued' && !bastByDo.has(d.id));
-
-  const startFromDO = (d) => {
-    // supplier/penyalur = the DO issuer entity; transportir = USI PTS (operator)
-    const issuerName = ISSUERS[d.issuerKey]?.name || '';
-    setForm({
-      deliveryOrderId: d.id,
-      tanggalBast: todayISO(),
-      supplier:    { name: issuerName, deliveryOrder: d.brNo },
-      penyalur:    { name: issuerName, vesselName: '', doPoSpk: d.brNo, quantity: String(d.dispatchedVolumeL) },
-      transportir: { name: ISSUERS.USI_PTS.name, vesselName: '', nakhoda: '' },
-      qty: { volumeDiterima: '', shoreTank: '', fmAwal: '', fmAkhir: '', suhu: '', jamStart: '', jamEnd: '' },
-      signers: {
-        diserahkan: { name: '', role: 'Master / Chef Officer' },
-        diterima:   { name: '', role: '' },
-        diketahui:  { name: '', role: 'SpV USIPTS' },
-      },
-      dispatchedVolumeL: d.dispatchedVolumeL,
-    });
-    setEditId(null);
-  };
+  // BASTs are auto-created (blank) when a DO is issued. This module FILLS them.
+  const blankBASTs = bastC.data.filter(b => b.status === 'blank');
 
   const startEdit = (b) => { setForm(JSON.parse(JSON.stringify(b))); setEditId(b.id); };
   const cancel = () => { setForm(null); setEditId(null); };
@@ -68,16 +46,11 @@ export default function BASTModule() {
     if (!form.qty.volumeDiterima) { alert('Volume Diterima (received) is required.'); return; }
     setBusy(true);
     try {
-      let nomorBast = form.nomorBast;
       const d = new Date(form.tanggalBast);
-      if (!editId) {
-        const year = d.getFullYear();
-        const seq = await allocateNumber('bast', year);
-        nomorBast = formatBastNumber({ seq, monthIndex: d.getMonth(), year });
-      }
+      // The BAST number already exists (allocated when the DO was issued). We only fill.
       const payload = {
         deliveryOrderId: form.deliveryOrderId,
-        nomorBast,
+        nomorBast: form.nomorBast,
         tanggalBast: form.tanggalBast,
         tanggalBastText: `${d.getDate()} ${INDO_MONTHS[d.getMonth()]} ${d.getFullYear()}`,
         hari: INDO_DAYS[d.getDay()],
@@ -90,11 +63,9 @@ export default function BASTModule() {
         signers: form.signers,
         status: 'bast_done',
       };
-      if (editId) {
-        await bastC.update(editId, payload);
-      } else {
-        await bastC.add(payload);
-        // advance DO + its sales request
+      await bastC.update(editId, payload);
+      // advance DO + its sales request now that received volume is recorded
+      if (form.deliveryOrderId) {
         await doC.update(form.deliveryOrderId, { status: 'delivered' });
         const theDO = doC.data.find(x => x.id === form.deliveryOrderId);
         if (theDO?.salesRequestId) await srC.update(theDO.salesRequestId, { status: 'bast_done' });
@@ -109,12 +80,14 @@ export default function BASTModule() {
 
   const printBAST = (b) => {
     const d = new Date(b.tanggalBast);
+    const hari = b.hari || INDO_DAYS[d.getDay()];
+    const teks = b.tanggalBastText || `${d.getDate()} ${INDO_MONTHS[d.getMonth()]} ${d.getFullYear()}`;
     const html = buildBASTHtml({
       usiLogo: USI_LOGO,
       nomorBast: b.nomorBast,
-      tanggalBast: new Date(b.tanggalBast).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
-      hari: b.hari,
-      tanggalTeks: b.tanggalBastText,
+      tanggalBast: d.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+      hari,
+      tanggalTeks: teks,
       supplier: b.supplier,
       penyalur: b.penyalur,
       transportir: b.transportir,
@@ -125,9 +98,8 @@ export default function BASTModule() {
   };
 
   const del = async (b) => {
-    if (!confirm(`Delete BAST ${b.nomorBast}? The DO reverts to 'issued'.`)) return;
+    if (!confirm(`Delete BAST ${b.nomorBast}?`)) return;
     await bastC.remove(b.id);
-    if (b.deliveryOrderId) await doC.update(b.deliveryOrderId, { status: 'issued' });
   };
 
   const fmtL = n => (Number(n) || 0).toLocaleString('id-ID');
@@ -141,22 +113,27 @@ export default function BASTModule() {
         </div>
       </div>
 
-      {/* Open DOs */}
-      {!form && openDOs.length > 0 && (
+      {/* Blank BASTs awaiting fill (auto-created with their DO; printable pre-bunker) */}
+      {!form && blankBASTs.length > 0 && (
         <div style={{ ...s.card, marginBottom: 20 }}>
           <div style={{ fontSize: 10, color: T.textDim, letterSpacing: 1.5, marginBottom: 10 }}>
-            ISSUED DOs — CREATE A BAST
+            BLANK BASTs — PRINT PRE-BUNKER, FILL AFTER LOADING
           </div>
-          {openDOs.map(d => (
-            <div key={d.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          {blankBASTs.map(b => (
+            <div key={b.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
               padding: '8px 0', borderBottom: `1px solid ${T.border}` }}>
               <div style={{ fontSize: 12 }}>
-                <span style={{ color: T.amber, fontFamily: T.font, fontSize: 11 }}>{d.brNo}</span>
-                <span style={{ color: T.textDim }}> · {d.deliverTo} · {d.vesselName} · {fmtL(d.dispatchedVolumeL)} L</span>
+                <span style={{ color: T.amber, fontFamily: T.font, fontSize: 11 }}>{b.nomorBast}</span>
+                <span style={{ color: T.textDim }}> · DO {b.supplier?.deliveryOrder} · {fmtL(b.dispatchedVolumeL)} L dispatched</span>
               </div>
-              <button onClick={() => startFromDO(d)} style={{ ...s.btn('primary'), padding: '5px 14px', fontSize: 10 }}>
-                CREATE BAST →
-              </button>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button onClick={() => printBAST(b)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10 }}>
+                  PRINT BLANK
+                </button>
+                <button onClick={() => startEdit(b)} style={{ ...s.btn('primary'), padding: '5px 14px', fontSize: 10 }}>
+                  FILL →
+                </button>
+              </div>
             </div>
           ))}
         </div>
@@ -166,11 +143,10 @@ export default function BASTModule() {
       {form && (
         <div style={{ ...s.card, marginBottom: 20 }}>
           <div style={{ fontSize: 11, color: T.amber, letterSpacing: 1, marginBottom: 4 }}>
-            {editId ? `EDIT BAST ${form.nomorBast || ''}` : 'NEW BAST'}
+            FILL BAST {form.nomorBast || ''}
           </div>
           <div style={{ fontSize: 10, color: T.textDim, marginBottom: 14 }}>
             Against DO <span style={{ color: T.amber }}>{form.supplier.deliveryOrder}</span>
-            {!editId && ' · BAST number allocated on save'}
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 14 }}>
@@ -278,6 +254,7 @@ export default function BASTModule() {
               <th style={s.th}>BAST NUMBER</th>
               <th style={s.th}>DATE</th>
               <th style={s.th}>DO REF</th>
+              <th style={s.th}>STATUS</th>
               <th style={{ ...s.th, textAlign: 'right' }}>RECEIVED (L)</th>
               <th style={{ ...s.th, textAlign: 'right' }}>TRANSIT LOSS</th>
               <th style={s.th}></th>
@@ -289,13 +266,22 @@ export default function BASTModule() {
                 <td style={{ ...s.td, fontFamily: T.font, color: T.amber, fontSize: 11 }}>{b.nomorBast}</td>
                 <td style={s.td}>{b.tanggalBast}</td>
                 <td style={{ ...s.td, fontFamily: T.font, fontSize: 10 }}>{b.supplier?.deliveryOrder}</td>
-                <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font }}>{fmtL(b.qty?.volumeDiterima)}</td>
+                <td style={s.td}>
+                  <span style={{ fontSize: 10, color: b.status === 'blank' ? T.textDim : T.green }}>
+                    {b.status === 'blank' ? 'blank (pre-bunker)' : 'completed'}
+                  </span>
+                </td>
+                <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font }}>
+                  {b.status === 'blank' ? '—' : fmtL(b.qty?.volumeDiterima)}
+                </td>
                 <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font, color: b.transitLossL > 0 ? T.red : T.text }}>
-                  {fmtL(b.transitLossL)}
+                  {b.status === 'blank' ? '—' : fmtL(b.transitLossL)}
                 </td>
                 <td style={{ ...s.td, textAlign: 'right', whiteSpace: 'nowrap' }}>
                   <button onClick={() => printBAST(b)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6 }}>PDF</button>
-                  <button onClick={() => startEdit(b)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6 }}>EDIT</button>
+                  <button onClick={() => startEdit(b)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6 }}>
+                    {b.status === 'blank' ? 'FILL' : 'EDIT'}
+                  </button>
                   <button onClick={() => del(b)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, color: T.red }}>DEL</button>
                 </td>
               </tr>

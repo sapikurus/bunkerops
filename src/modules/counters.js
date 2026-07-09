@@ -17,3 +17,12 @@ export async function allocateNumber(kind, year) {
   });
   return next;
 }
+
+// Set the counter's current value directly (the seed). Next allocation = value + 1.
+// Used by Settings to align the sequence with existing paper records.
+export async function setCounterSeed(kind, year, value) {
+  const ref = doc(db, COL.counters, `${kind}_${year}`);
+  await runTransaction(db, async (tx) => {
+    tx.set(ref, { kind, year, value: Math.max(0, value | 0) }, { merge: true });
+  });
+}
