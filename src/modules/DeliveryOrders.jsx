@@ -4,6 +4,7 @@ import { COL, ISSUERS, NODES, formatDoNumber, formatBastNumber } from '../config
 import { useCollection } from './useCollection';
 import { allocateNumber } from './counters';
 import { buildDOHtml } from './doGen';
+import VolumeInput from './VolumeInput';
 import { USI_LOGO, PPS_LOGO } from './assets';
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -229,8 +230,8 @@ export default function DeliveryOrders() {
             </div>
             <div>
               <label style={s.label}>Dispatched (L)</label>
-              <input style={s.input} type="number" value={form.dispatchedVolumeL}
-                onChange={e => sf('dispatchedVolumeL', e.target.value)} />
+              <VolumeInput value={form.dispatchedVolumeL}
+                onChange={v => sf('dispatchedVolumeL', v)} placeholder="21.000" />
             </div>
             <div>
               <label style={s.label}>BR Date</label>

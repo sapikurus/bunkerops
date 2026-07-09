@@ -1,17 +1,21 @@
+// Theme tokens. Colors reference CSS variables (defined in index.css) so the
+// theme can switch at runtime by flipping the `data-theme` attribute on <html>,
+// with no React re-render plumbing and no changes to consuming modules.
+
 export const T = {
-  bg:          '#0b0f14',
-  card:        '#131920',
-  border:      '#1e2a38',
-  borderLight: '#243040',
-  amber:       '#e8a020',
-  amberDim:    '#a06010',
-  amberGlow:   'rgba(232,160,32,0.12)',
-  text:        '#cdd8e8',
-  textDim:     '#6a8099',
-  textFaint:   '#3a5070',
-  green:       '#3aba6a',
-  red:         '#e85060',
-  blue:        '#4a9eda',
+  bg:          'var(--bg)',
+  card:        'var(--card)',
+  border:      'var(--border)',
+  borderLight: 'var(--border-light)',
+  amber:       'var(--amber)',
+  amberDim:    'var(--amber-dim)',
+  amberGlow:   'var(--amber-glow)',
+  text:        'var(--text)',
+  textDim:     'var(--text-dim)',
+  textFaint:   'var(--text-faint)',
+  green:       'var(--green)',
+  red:         'var(--red)',
+  blue:        'var(--blue)',
   font:        "'DM Mono', 'Courier New', monospace",
   serif:       "Georgia, 'Times New Roman', serif",
 };
@@ -24,7 +28,7 @@ export const s = {
     padding: 24,
   },
   input: {
-    background: '#0d141c',
+    background: 'var(--input-bg)',
     border: `1px solid ${T.border}`,
     borderRadius: 3,
     color: T.text,
@@ -45,8 +49,8 @@ export const s = {
     marginBottom: 4,
   },
   btn: (variant = 'primary') => ({
-    background: variant === 'primary' ? T.amber : variant === 'ghost' ? 'transparent' : '#1e2a38',
-    color: variant === 'primary' ? '#0b0f14' : T.text,
+    background: variant === 'primary' ? T.amber : variant === 'ghost' ? 'transparent' : 'var(--btn-secondary)',
+    color: variant === 'primary' ? 'var(--btn-primary-text)' : T.text,
     border: variant === 'ghost' ? `1px solid ${T.border}` : 'none',
     borderRadius: 3,
     padding: '7px 16px',
@@ -58,7 +62,7 @@ export const s = {
     transition: 'opacity .15s',
   }),
   th: {
-    background: '#0d141c',
+    background: 'var(--input-bg)',
     color: T.textDim,
     fontSize: 10,
     letterSpacing: 1.5,

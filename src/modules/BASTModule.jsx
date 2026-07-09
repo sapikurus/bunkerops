@@ -3,6 +3,7 @@ import { T, s } from '../tokens';
 import { COL, ISSUERS } from '../config';
 import { useCollection } from './useCollection';
 import { buildBASTHtml } from './bastGen';
+import VolumeInput from './VolumeInput';
 import { USI_LOGO } from './assets';
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -177,8 +178,8 @@ export default function BASTModule() {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10, marginBottom: 8 }}>
             <div>
               <label style={s.label}>Volume Diterima (R)</label>
-              <input style={s.input} type="number" value={form.qty.volumeDiterima}
-                onChange={e => setNested('qty.volumeDiterima', e.target.value)} placeholder="398400" />
+              <VolumeInput value={form.qty.volumeDiterima}
+                onChange={v => setNested('qty.volumeDiterima', v)} placeholder="398.400" />
             </div>
             <div>
               <label style={s.label}>Dispatched (D)</label>

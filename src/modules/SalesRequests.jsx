@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import { T, s } from '../tokens';
 import { COL, SCHEMES, ISSUERS } from '../config';
 import { useCollection } from './useCollection';
+import VolumeInput from './VolumeInput';
 import { useFuelOpsMaster } from './useFuelOpsMaster';
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -178,8 +179,8 @@ export default function SalesRequests() {
             </div>
             <div>
               <label style={s.label}>Requested Volume (L)</label>
-              <input style={s.input} type="number" value={form.requestedVolumeL}
-                onChange={e => sf('requestedVolumeL', e.target.value)} placeholder="21000" />
+              <VolumeInput value={form.requestedVolumeL}
+                onChange={v => sf('requestedVolumeL', v)} placeholder="21.000" />
             </div>
           </div>
 

@@ -2,10 +2,51 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Light theme (default) */
+:root, [data-theme="light"] {
+  --bg:           #f4f6f9;
+  --card:         #ffffff;
+  --border:       #d8dee7;
+  --border-light: #e6ebf1;
+  --amber:        #c47f00;
+  --amber-dim:    #a06010;
+  --amber-glow:   rgba(196,127,0,0.10);
+  --text:         #1a2432;
+  --text-dim:     #5a6b7f;
+  --text-faint:   #97a4b4;
+  --green:        #1f9d54;
+  --red:          #d13a4a;
+  --blue:         #2f7fca;
+  --input-bg:     #f7f9fb;
+  --btn-primary-text: #ffffff;
+  --btn-secondary: #e6ebf1;
+}
+
+/* Dark theme */
+[data-theme="dark"] {
+  --bg:           #0b0f14;
+  --card:         #131920;
+  --border:       #1e2a38;
+  --border-light: #243040;
+  --amber:        #e8a020;
+  --amber-dim:    #a06010;
+  --amber-glow:   rgba(232,160,32,0.12);
+  --text:         #cdd8e8;
+  --text-dim:     #6a8099;
+  --text-faint:   #3a5070;
+  --green:        #3aba6a;
+  --red:          #e85060;
+  --blue:         #4a9eda;
+  --input-bg:     #0d141c;
+  --btn-primary-text: #0b0f14;
+  --btn-secondary: #1e2a38;
+}
+
 * { box-sizing: border-box; }
 body {
   margin: 0;
-  background: #0b0f14;
-  color: #cdd8e8;
+  background: var(--bg);
+  color: var(--text);
   font-family: 'DM Mono', 'Courier New', monospace;
+  transition: background .2s, color .2s;
 }
