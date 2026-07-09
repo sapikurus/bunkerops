@@ -37,10 +37,15 @@ export function buildDOHtml(cfg) {
     deliverLocation,   // e.g. IWIP
     vesselName,        // e.g. SEREIA 75
     items,             // [{ no, description, qtyLiters }]
-    estDeliveryDate,   // 'DD-MMM-YYYY HH:mm'
+    estDeliveryDate,   // ISO date
     note,              // free text or '-'
-    signers,           // { issuedBy:{role,name}, approvedBy:{role,name}, deliveryBy:{role,name}, receivedBy:{role,name} }
-    scheme,            // 'VHS' | 'PPS_SALE' — shown as a small tag
+    soNumber,          // linked Sales Order number
+    deliveredFrom,     // source node name (e.g. 'OB Galley')
+    clientPoRef,       // client's PO reference
+    qrDataUrl,         // QR image data URL for verification
+    verifyCode,        // short code under QR
+    signers,           // { issuedBy, approvedBy, deliveryBy, receivedBy }
+    scheme,            // 'PPS_SALE' | 'NON_PPS_SALE'
   } = cfg;
 
   const issuer = { ...DO_ISSUERS[issuerKey || (scheme === 'PPS_SALE' ? 'PPS' : 'USI_PTS')], logo: issuerLogo };
@@ -141,6 +146,9 @@ export function buildDOHtml(cfg) {
   </table>
 
   <div class="meta">
+    ${soNumber ? `<b>Sales Order :</b> ${soNumber}<br>` : ''}
+    ${deliveredFrom ? `<b>Delivered From :</b> ${deliveredFrom}<br>` : ''}
+    ${clientPoRef ? `<b>Client PO Ref :</b> ${clientPoRef}<br>` : ''}
     <b>Estimate Delivery Date :</b> ${estDeliveryDate ? fmtDate(estDeliveryDate) : '-'}<br>
     <b>Note :</b> ${note || '-'}
   </div>
@@ -163,6 +171,11 @@ export function buildDOHtml(cfg) {
       <td>${signers.receivedBy.name||''}</td>
     </tr>
   </table>
+
+  ${qrDataUrl ? `<div style="margin-top:24px;text-align:right">
+    <img src="${qrDataUrl}" style="width:70px;height:70px" alt="verify" />
+    <div style="font-size:7pt;color:#666;margin-top:2px">Scan to verify${verifyCode ? ` · ${verifyCode}` : ''}</div>
+  </div>` : ''}
 
 </body></html>`;
 }

@@ -5,6 +5,7 @@ import { useCollection } from './useCollection';
 import { buildBASTHtml } from './bastGen';
 import VolumeInput from './VolumeInput';
 import { USI_LOGO } from './assets';
+import { makeQR } from './qr';
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const INDO_MONTHS = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
@@ -59,6 +60,8 @@ export default function BASTModule() {
         penyalur: form.penyalur,
         transportir: form.transportir,
         qty: form.qty,
+        uom: form.uom || 'Liter',
+        note: form.note || '',
         transitLossL: transitLoss,
         dispatchedVolumeL: form.dispatchedVolumeL,
         signers: form.signers,
@@ -79,10 +82,12 @@ export default function BASTModule() {
     }
   };
 
-  const printBAST = (b) => {
+  const printBAST = async (b) => {
     const d = new Date(b.tanggalBast);
     const hari = b.hari || INDO_DAYS[d.getDay()];
     const teks = b.tanggalBastText || `${d.getDate()} ${INDO_MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+    let qrDataUrl = '';
+    try { qrDataUrl = await makeQR('bast', b.id); } catch (e) { /* QR optional */ }
     const html = buildBASTHtml({
       usiLogo: USI_LOGO,
       nomorBast: b.nomorBast,
@@ -93,6 +98,10 @@ export default function BASTModule() {
       penyalur: b.penyalur,
       transportir: b.transportir,
       qty: b.qty,
+      uom: b.uom || 'Liter',
+      note: b.note || '',
+      qrDataUrl,
+      verifyCode: b.nomorBast,
       signers: b.signers,
     });
     openPrint(html);
@@ -217,6 +226,20 @@ export default function BASTModule() {
                 <label style={s.label}>Jam End</label>
                 <input style={s.input} value={form.qty.jamEnd} onChange={e => setNested('qty.jamEnd', e.target.value)} placeholder="05.15" />
               </div>
+            </div>
+          </div>
+
+          {/* UoM + Note */}
+          <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 12, marginBottom: 16 }}>
+            <div>
+              <label style={s.label}>Unit of Measurement</label>
+              <input style={s.input} value={form.uom || ''} onChange={e => setNested('uom', e.target.value)} placeholder="Liter" />
+            </div>
+            <div>
+              <label style={s.label}>Note / Catatan (disputes, remarks)</label>
+              <textarea style={{ ...s.input, minHeight: 52, resize: 'vertical', fontFamily: T.font }}
+                value={form.note || ''} onChange={e => setNested('note', e.target.value)}
+                placeholder="Any remarks about the bunker activity…" />
             </div>
           </div>
 

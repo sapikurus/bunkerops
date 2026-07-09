@@ -8,17 +8,28 @@ const COPIES = ['ORIGINAL', 'COPY-1', 'COPY-2', 'COPY-3'];
 function bastPage(cfg, copyLabel) {
   const {
     usiLogo,
-    nomorBast, tanggalBast,          // doc no + date (e.g. '02/PTS-PPS/BAST/XII/25', 'December 19, 2025')
+    nomorBast, tanggalBast,          // doc no + date
     hari, tanggalTeks,               // 'Jumat', '19 Desember 2025'
     supplier,                        // { name, deliveryOrder }
     penyalur,                        // { name, vesselName, doPoSpk, quantity }
     transportir,                     // { name, vesselName, nakhoda }
     qty,                             // { volumeDiterima, shoreTank, fmAwal, fmAkhir, suhu, jamStart, jamEnd }
-    signers,                         // { diserahkan:{name,role}, diterima:{name,role}, diketahui:{name,role} }
+    uom,                             // unit of measurement, e.g. 'Liter'
+    note,                            // free-text remarks (disputes etc.)
+    qrDataUrl,                       // QR image data URL for verification
+    verifyCode,                      // short code shown under QR
+    signers,                         // { diserahkan, diterima, diketahui }
   } = cfg;
 
   const wmColor = copyLabel === 'ORIGINAL' ? '#d33' : '#d9a3a3';
   const row = (k, v) => `<tr><td class="k">${k}</td><td class="c">:</td><td class="v">${v ?? ''}</td></tr>`;
+  // Format a numeric string with id-ID thousand separators + optional unit; pass through non-numeric.
+  const u = uom ? ` ${uom}` : '';
+  const num = (v) => {
+    if (v === '' || v == null) return '';
+    const n = Number(String(v).replace(/[^\d.-]/g, ''));
+    return isNaN(n) ? v : n.toLocaleString('id-ID') + u;
+  };
 
   return `
   <div class="page">
@@ -55,7 +66,7 @@ function bastPage(cfg, copyLabel) {
             ${row('Name', penyalur.name)}
             ${row('Vessel Name', penyalur.vesselName)}
             ${row('DO/PO/SPK', penyalur.doPoSpk)}
-            ${row('Quantity', penyalur.quantity)}
+            ${row('Quantity', num(penyalur.quantity))}
           </table>
 
           <div class="sec"><span class="num">3.</span><b>Transportir</b></div>
@@ -67,18 +78,29 @@ function bastPage(cfg, copyLabel) {
 
           <div class="sec"><span class="num">4.</span><b>Quantity</b></div>
           <table class="kv">
-            ${row('Volume Diterima', qty.volumeDiterima)}
-            ${row('Shore Tank', qty.shoreTank)}
-            ${row('Flow meter Awal', qty.fmAwal)}
-            ${row('Flow meter Akhir', qty.fmAkhir)}
+            ${row('Volume Diterima', num(qty.volumeDiterima))}
+            ${row('Shore Tank', num(qty.shoreTank))}
+            ${row('Flow meter Awal', num(qty.fmAwal))}
+            ${row('Flow meter Akhir', num(qty.fmAkhir))}
             ${row('Suhu', qty.suhu)}
             ${row('Jam Start Flow', qty.jamStart)}
             ${row('Jam End Flow', qty.jamEnd)}
           </table>
 
           <p class="closing">Demikian Berita Acara ini dibuat dengan sebenarnya agar dapat dipergunakan seperlunya.</p>
+
+          ${note && note.trim() ? `
+          <div class="notebox">
+            <div class="notebox-label">Catatan / Note:</div>
+            <div class="notebox-body">${note.replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>')}</div>
+          </div>` : ''}
         </div>
       </div>
+
+      ${qrDataUrl ? `<div class="qr-slot">
+        <img src="${qrDataUrl}" alt="verify" />
+        <div class="qc">Scan to verify${verifyCode ? `<br>${verifyCode}` : ''}</div>
+      </div>` : ''}
 
       <div class="sign-anchor">
         <table class="sign">
@@ -130,6 +152,12 @@ export function buildBASTHtml(cfg) {
   table.kv .c { width:12px; }
   table.kv .v { padding-left:6px; }
   .closing { margin:14px 0 10px; font-size:10pt; }
+  .notebox { margin:10px 0; border:1px solid #999; border-radius:3px; padding:8px 10px; }
+  .notebox-label { font-size:8.5pt; font-weight:bold; color:#444; margin-bottom:3px; }
+  .notebox-body { font-size:9pt; color:#111; min-height:24px; line-height:1.5; }
+  .qr-slot { position:absolute; bottom:6mm; right:8mm; text-align:center; }
+  .qr-slot img { width:64px; height:64px; }
+  .qr-slot .qc { font-size:6pt; color:#666; margin-top:2px; }
   table.sign { width:100%; border-collapse:collapse; }
   table.sign td { border:1px solid #000; text-align:center; font-size:9.5pt; }
   table.sign .sh td { padding:5px; }

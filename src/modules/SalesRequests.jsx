@@ -1,7 +1,8 @@
 import { useState, useMemo } from 'react';
 import { T, s } from '../tokens';
-import { COL, SCHEMES, ISSUERS } from '../config';
+import { COL, SCHEMES, ISSUERS, formatSoNumber } from '../config';
 import { useCollection } from './useCollection';
+import { allocateNumber } from './counters';
 import VolumeInput from './VolumeInput';
 import { useFuelOpsMaster } from './useFuelOpsMaster';
 
@@ -58,7 +59,17 @@ export default function SalesRequests() {
     if (!form.scheme || !form.nodeId)     { alert('Scheme and Node are required.'); return; }
     if (!form.requestedVolumeL)           { alert('Requested volume is required.'); return; }
     const ft = fuelTypes.find(f => f.id === form.fuelTypeId);
+    const node = nodes.find(n => n.id === form.nodeId);
+    let soNumber = form.soNumber;
+    // Allocate an atomic SO number only on first creation.
+    if (!editId) {
+      const d = new Date(form.requestedDate);
+      const seq = await allocateNumber('so', d.getFullYear());
+      const issuerCode = ISSUERS[SCHEMES[form.scheme].issuer]?.code || 'PPS';
+      soNumber = formatSoNumber({ seq, issuerCode, nodeCode: node?.code || '', monthIndex: d.getMonth(), year: d.getFullYear() });
+    }
     const payload = {
+      soNumber,
       galleyPoRef: form.galleyPoRef.trim(),
       clientId: form.clientId,
       clientName: selClient?.groupName || '',
@@ -69,7 +80,8 @@ export default function SalesRequests() {
       bucket: SCHEMES[form.scheme].bucket,
       issuerKey: SCHEMES[form.scheme].issuer,
       nodeId: form.nodeId,
-      nodeName: nodes.find(n => n.id === form.nodeId)?.name || '',
+      nodeName: node?.name || '',
+      nodeCode: node?.code || '',
       fuelTypeId: form.fuelTypeId,
       fuelTypeName: ft?.name || '',
       fuelTypeShort: ft?.shortName || '',
@@ -84,7 +96,7 @@ export default function SalesRequests() {
   };
 
   const del = async (r) => {
-    if (!confirm('Delete this sales request?')) return;
+    if (!confirm('Delete this sales order?')) return;
     await sr.remove(r.id);
   };
 
@@ -94,18 +106,18 @@ export default function SalesRequests() {
     <div style={{ padding: 40, maxWidth: 1000 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
         <div>
-          <div style={{ fontSize: 11, color: T.amber, letterSpacing: 1.5 }}>SALES REQUESTS</div>
+          <div style={{ fontSize: 11, color: T.amber, letterSpacing: 1.5 }}>SALES ORDERS</div>
           <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>
             The trigger document. Scheme choice drives bucket, DO issuer, and revenue treatment.
           </div>
         </div>
-        {!form && <button onClick={startNew} style={s.btn('primary')}>+ NEW REQUEST</button>}
+        {!form && <button onClick={startNew} style={s.btn('primary')}>+ NEW SALES ORDER</button>}
       </div>
 
       {form && (
         <div style={{ ...s.card, marginBottom: 20 }}>
           <div style={{ fontSize: 11, color: T.amber, letterSpacing: 1, marginBottom: 14 }}>
-            {editId ? 'EDIT REQUEST' : 'NEW REQUEST'}
+            {editId ? `EDIT ${form.soNumber || 'SALES ORDER'}` : 'NEW SALES ORDER'}
           </div>
 
           {/* Client cascade */}
@@ -214,11 +226,12 @@ export default function SalesRequests() {
       {sr.loading ? (
         <div style={{ color: T.textDim, fontSize: 12 }}>Loading…</div>
       ) : sr.data.length === 0 ? (
-        <div style={{ color: T.textFaint, fontSize: 12, padding: 20 }}>No sales requests yet.</div>
+        <div style={{ color: T.textFaint, fontSize: 12, padding: 20 }}>No sales orders yet.</div>
       ) : (
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr>
+              <th style={s.th}>SO NUMBER</th>
               <th style={s.th}>DATE</th>
               <th style={s.th}>CLIENT / ENTITY</th>
               <th style={s.th}>VESSEL</th>
@@ -232,6 +245,7 @@ export default function SalesRequests() {
           <tbody>
             {sr.data.map(r => (
               <tr key={r.id}>
+                <td style={{ ...s.td, fontFamily: T.font, color: T.amber, fontSize: 10 }}>{r.soNumber || '—'}</td>
                 <td style={s.td}>{r.requestedDate}</td>
                 <td style={s.td}>
                   <div>{r.clientName}</div>

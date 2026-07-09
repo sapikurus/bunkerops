@@ -52,8 +52,14 @@ export function formatDoNumber({ seq, issuerCode, nodeCode, monthIndex, year }) 
   return `DO-${s}/${issuerCode}/${nodeCode}/${ROMAN[monthIndex]}/${String(year).slice(-2)}`;
 }
 
-// Build a BAST number: {seq:02}/PTS-PPS/BAST/{romanMonth}/{yy}
+// Build a BAST number: {seq:001}/PTS/BAST/{romanMonth}/{yy}
 export function formatBastNumber({ seq, monthIndex, year }) {
-  const s = String(seq).padStart(2, '0');
-  return `${s}/PTS-PPS/BAST/${ROMAN[monthIndex]}/${String(year).slice(-2)}`;
+  const s = String(seq).padStart(3, '0');
+  return `${s}/PTS/BAST/${ROMAN[monthIndex]}/${String(year).slice(-2)}`;
+}
+
+// Build an SO number: SO-{seq:0001}/{issuerCode}/{nodeCode}/{romanMonth}/{yy}
+export function formatSoNumber({ seq, issuerCode, nodeCode, monthIndex, year }) {
+  const s = String(seq).padStart(4, '0');
+  return `SO-${s}/${issuerCode}/${nodeCode}/${ROMAN[monthIndex]}/${String(year).slice(-2)}`;
 }

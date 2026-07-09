@@ -6,6 +6,7 @@ import { allocateNumber } from './counters';
 import { buildDOHtml } from './doGen';
 import VolumeInput from './VolumeInput';
 import { USI_LOGO, PPS_LOGO } from './assets';
+import { makeQR } from './qr';
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const romanMonth = (d) => new Date(d).getMonth();
@@ -43,15 +44,18 @@ export default function DeliveryOrders() {
     setForm({
       salesRequestId: r.id,
       scheme: r.scheme,
-      issuerKey: r.issuerKey,       // derived at sales-request time
+      issuerKey: r.issuerKey,       // derived at sales-order time
       bucket: r.bucket,
       nodeId: r.nodeId,
-      nodeCode: node?.code || '',
+      nodeCode: r.nodeCode || node?.code || '',
       deliverTo: r.entityName,
       deliverLocation: r.deliveryLocation,
       vesselName: r.vesselName,
       fuelDescription: r.fuelTypeName,
       dispatchedVolumeL: r.requestedVolumeL,   // editable — actual dispatched
+      soNumber: r.soNumber || '',
+      deliveredFrom: r.nodeName || node?.name || '',
+      clientPoRef: r.galleyPoRef || '',
       brDate: todayISO(),
       estDeliveryDate: '',
       note: '-',
@@ -96,6 +100,9 @@ export default function DeliveryOrders() {
         dispatchedVolumeL: Number(form.dispatchedVolumeL) || 0,
         estDeliveryDate: form.estDeliveryDate || '',
         note: form.note || '-',
+        soNumber: form.soNumber || '',
+        deliveredFrom: form.deliveredFrom || '',
+        clientPoRef: form.clientPoRef || '',
         signers: form.signers,
         status: 'issued',
       };
@@ -117,6 +124,8 @@ export default function DeliveryOrders() {
           penyalur:    { name: issuerName, vesselName: '', doPoSpk: brNo, quantity: String(Number(form.dispatchedVolumeL) || 0) },
           transportir: { name: ISSUERS.USI_PTS.name, vesselName: '', nakhoda: '' },
           qty: { volumeDiterima: '', shoreTank: '', fmAwal: '', fmAkhir: '', suhu: '', jamStart: '', jamEnd: '' },
+          uom: 'Liter',
+          note: '',
           transitLossL: null,
           dispatchedVolumeL: Number(form.dispatchedVolumeL) || 0,
           signers: {
@@ -135,8 +144,10 @@ export default function DeliveryOrders() {
     }
   };
 
-  const printDO = (d) => {
+  const printDO = async (d) => {
     const issuerLogo = d.issuerKey === 'USI_PTS' ? USI_LOGO : PPS_LOGO;
+    let qrDataUrl = '';
+    try { qrDataUrl = await makeQR('do', d.id); } catch (e) { /* QR optional */ }
     const html = buildDOHtml({
       issuerKey: d.issuerKey,
       issuerLogo,
@@ -148,6 +159,11 @@ export default function DeliveryOrders() {
       items: d.items,
       estDeliveryDate: d.estDeliveryDate || '-',
       note: d.note,
+      soNumber: d.soNumber,
+      deliveredFrom: d.deliveredFrom,
+      clientPoRef: d.clientPoRef,
+      qrDataUrl,
+      verifyCode: d.brNo,
       scheme: d.scheme,
       signers: d.signers,
     });
