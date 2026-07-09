@@ -1,31 +1,32 @@
 import { useState } from 'react';
 import { T } from './tokens';
 import { APP_NAME } from './config';
-import Healthcheck from './modules/Healthcheck';
 import Nodes from './modules/Nodes';
 import Clients from './modules/Clients';
 import SalesRequests from './modules/SalesRequests';
+import DeliveryOrders from './modules/DeliveryOrders';
+import BASTModule from './modules/BASTModule';
 
 // Module registry. Real modules get wired in here as they're built.
 const MODULES = [
-  { key: 'healthcheck', label: 'Healthcheck',    icon: '✓', ready: true },
   { key: 'nodes',       label: 'Storage Nodes',  icon: '⛴', ready: true },
   { key: 'clients',     label: 'Clients',        icon: '👥', ready: true },
   { key: 'sales',       label: 'Sales Requests', icon: '📋', ready: true },
-  { key: 'do',          label: 'Delivery Orders',icon: '📦', ready: false },
-  { key: 'bast',        label: 'BAST',           icon: '📑', ready: false },
+  { key: 'do',          label: 'Delivery Orders',icon: '📦', ready: true },
+  { key: 'bast',        label: 'BAST',           icon: '📑', ready: true },
   { key: 'stock',       label: 'Stock Cards',    icon: '📊', ready: false },
 ];
 
 export default function App() {
-  const [active, setActive] = useState('healthcheck');
+  const [active, setActive] = useState('nodes');
 
   const renderModule = () => {
     switch (active) {
-      case 'healthcheck': return <Healthcheck />;
       case 'nodes':       return <Nodes />;
       case 'clients':     return <Clients />;
       case 'sales':       return <SalesRequests />;
+      case 'do':          return <DeliveryOrders />;
+      case 'bast':        return <BASTModule />;
       default:
         return (
           <div style={{ color: T.textDim, padding: 40, fontSize: 13 }}>
