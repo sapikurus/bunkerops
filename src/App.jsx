@@ -4,13 +4,14 @@ import { APP_NAME } from './config';
 import Healthcheck from './modules/Healthcheck';
 import Nodes from './modules/Nodes';
 import Clients from './modules/Clients';
+import SalesRequests from './modules/SalesRequests';
 
 // Module registry. Real modules get wired in here as they're built.
 const MODULES = [
   { key: 'healthcheck', label: 'Healthcheck',    icon: '✓', ready: true },
   { key: 'nodes',       label: 'Storage Nodes',  icon: '⛴', ready: true },
   { key: 'clients',     label: 'Clients',        icon: '👥', ready: true },
-  { key: 'sales',       label: 'Sales Requests', icon: '📋', ready: false },
+  { key: 'sales',       label: 'Sales Requests', icon: '📋', ready: true },
   { key: 'do',          label: 'Delivery Orders',icon: '📦', ready: false },
   { key: 'bast',        label: 'BAST',           icon: '📑', ready: false },
   { key: 'stock',       label: 'Stock Cards',    icon: '📊', ready: false },
@@ -24,6 +25,7 @@ export default function App() {
       case 'healthcheck': return <Healthcheck />;
       case 'nodes':       return <Nodes />;
       case 'clients':     return <Clients />;
+      case 'sales':       return <SalesRequests />;
       default:
         return (
           <div style={{ color: T.textDim, padding: 40, fontSize: 13 }}>

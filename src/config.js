@@ -35,8 +35,8 @@ export const NODES = {
 
 // Schemes drive issuer + revenue treatment.
 export const SCHEMES = {
-  VHS:      { key: 'VHS',      label: 'VHS (fuel owned by MBSS, stored)', issuer: 'USI_PTS', bucket: 'MBSS' },
-  PPS_SALE: { key: 'PPS_SALE', label: 'PPS Sale (fuel owned by PPS)',     issuer: 'PPS',     bucket: 'PPS'  },
+  PPS_SALE:     { key: 'PPS_SALE',     label: 'PPS Sale (fuel owned by PPS)',           issuer: 'PPS',     bucket: 'PPS'  },
+  NON_PPS_SALE: { key: 'NON_PPS_SALE', label: 'Non-PPS Sale (MBSS-owned, stored/VHS)',  issuer: 'USI_PTS', bucket: 'MBSS' },
 };
 
 // Storage-loss tolerance: 0.3% of incoming C, owner absorbs, USI PTS compensates excess.
