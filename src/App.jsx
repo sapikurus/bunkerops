@@ -1,50 +1,46 @@
 import { useState, useEffect } from 'react';
 import { T } from './tokens';
 import { APP_NAME } from './config';
-import Nodes from './modules/Nodes';
-import Clients from './modules/Clients';
+import { canAccess, ROLES } from './roles';
 import SalesRequests from './modules/SalesRequests';
 import DeliveryOrders from './modules/DeliveryOrders';
 import BASTModule from './modules/BASTModule';
 import Settings from './modules/Settings';
 
-const MODULES = [
-  { key: 'nodes',    label: 'Storage Nodes',   icon: '⛴', ready: true },
-  { key: 'clients',  label: 'Clients',         icon: '👥', ready: true },
-  { key: 'sales',    label: 'Sales Requests',  icon: '📋', ready: true },
-  { key: 'do',       label: 'Delivery Orders', icon: '📦', ready: true },
-  { key: 'bast',     label: 'BAST',            icon: '📑', ready: true },
-  { key: 'stock',    label: 'Stock Cards',     icon: '📊', ready: false },
-  { key: 'settings', label: 'Settings',        icon: '⚙',  ready: true },
+// Menu items with the capability each requires. Nodes/Clients now live inside Settings.
+const MENU = [
+  { key: 'sales',    label: 'Sales Requests',  icon: '📋', cap: 'salesOrder' },
+  { key: 'do',       label: 'Delivery Orders', icon: '📦', cap: 'deliveryOrder' },
+  { key: 'bast',     label: 'BAST',            icon: '📑', cap: 'bast' },
+  { key: 'stock',    label: 'Stock Cards',     icon: '📊', cap: 'stockCards', soon: true },
+  { key: 'settings', label: 'Settings',        icon: '⚙',  cap: null }, // shown if any settings sub-tab is allowed
 ];
 
-export default function App() {
-  const [active, setActive] = useState('nodes');
-  const [open, setOpen] = useState(false);      // mobile drawer open
+export default function App({ user, role, signOut }) {
+  const [open, setOpen] = useState(false);
   const [theme, setTheme] = useState('light');
 
-  // apply theme to <html data-theme>
-  useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
-  }, [theme]);
+  useEffect(() => { document.documentElement.setAttribute('data-theme', theme); }, [theme]);
+
+  // Settings shows if the role can access any of its sub-areas.
+  const canSettings = canAccess(role, 'generalSettings') || canAccess(role, 'masterData') || canAccess(role, 'usersRoles');
+  const items = MENU.filter(m => m.key === 'settings' ? canSettings : canAccess(role, m.cap));
+
+  const [active, setActive] = useState(items[0]?.key || 'do');
 
   const renderModule = () => {
     switch (active) {
-      case 'nodes':    return <Nodes />;
-      case 'clients':  return <Clients />;
-      case 'sales':    return <SalesRequests />;
-      case 'do':       return <DeliveryOrders />;
-      case 'bast':     return <BASTModule />;
-      case 'settings': return <Settings />;
+      case 'sales':    return <SalesRequests role={role} />;
+      case 'do':       return <DeliveryOrders role={role} />;
+      case 'bast':     return <BASTModule role={role} />;
+      case 'settings': return <Settings role={role} />;
+      case 'stock':
+        return <div style={{ color: T.textDim, padding: 40, fontSize: 13 }}>
+          <div style={{ fontSize: 16, color: T.text, marginBottom: 8 }}>Stock Cards</div>
+          Module not built yet.
+        </div>;
       default:
-        return (
-          <div style={{ color: T.textDim, padding: 40, fontSize: 13 }}>
-            <div style={{ fontSize: 16, color: T.text, marginBottom: 8 }}>
-              {MODULES.find(m => m.key === active)?.label}
-            </div>
-            Module not built yet.
-          </div>
-        );
+        return <div style={{ color: T.textDim, padding: 40 }}>Select a menu.</div>;
     }
   };
 
@@ -53,35 +49,48 @@ export default function App() {
   const Sidebar = (
     <div style={{ width: 220, background: T.card, borderRight: `1px solid ${T.border}`,
       padding: '20px 0', flexShrink: 0, height: '100%', overflowY: 'auto' }}>
-      <div style={{ padding: '0 20px 20px', borderBottom: `1px solid ${T.border}`, marginBottom: 12,
+      <div style={{ padding: '0 20px 16px', borderBottom: `1px solid ${T.border}`, marginBottom: 12,
         display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
           <div style={{ fontSize: 18, fontWeight: 700, color: T.amber, letterSpacing: 1 }}>{APP_NAME}</div>
           <div style={{ fontSize: 9, color: T.textFaint, letterSpacing: 1, marginTop: 2 }}>OB GALLEY · BUNKER OPS</div>
         </div>
         <button onClick={() => setOpen(false)}
-          style={{ display: 'none', background: 'none', border: 'none', color: T.textDim,
-            fontSize: 20, cursor: 'pointer' }} className="mobile-only-close">×</button>
+          style={{ display: 'none', background: 'none', border: 'none', color: T.textDim, fontSize: 20, cursor: 'pointer' }}
+          className="mobile-only-close">×</button>
       </div>
-      {MODULES.map(m => (
+
+      {/* current user + role */}
+      <div style={{ padding: '0 20px 12px', fontSize: 10, color: T.textDim, lineHeight: 1.5 }}>
+        <div style={{ color: T.text, wordBreak: 'break-all' }}>{user?.email}</div>
+        <div style={{ color: T.amber, letterSpacing: 1, marginTop: 2 }}>{ROLES[role]?.label?.toUpperCase()}</div>
+      </div>
+
+      {items.map(m => (
         <div key={m.key} onClick={() => pick(m.key)}
           style={{ padding: '11px 20px', cursor: 'pointer', fontSize: 12, display: 'flex',
             alignItems: 'center', gap: 10,
-            color: active === m.key ? T.amber : (m.ready ? T.text : T.textFaint),
+            color: active === m.key ? T.amber : T.text,
             background: active === m.key ? T.amberGlow : 'transparent',
             borderLeft: active === m.key ? `2px solid ${T.amber}` : '2px solid transparent' }}>
           <span style={{ width: 16, textAlign: 'center' }}>{m.icon}</span>
           <span>{m.label}</span>
-          {!m.ready && <span style={{ marginLeft: 'auto', fontSize: 8, color: T.textFaint }}>soon</span>}
+          {m.soon && <span style={{ marginLeft: 'auto', fontSize: 8, color: T.textFaint }}>soon</span>}
         </div>
       ))}
-      {/* theme toggle */}
+
       <div style={{ padding: '16px 20px', marginTop: 12, borderTop: `1px solid ${T.border}` }}>
         <button onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
           style={{ background: 'transparent', border: `1px solid ${T.border}`, borderRadius: 3,
             color: T.textDim, fontSize: 11, padding: '6px 12px', cursor: 'pointer', width: '100%',
-            fontFamily: T.font }}>
+            fontFamily: T.font, marginBottom: 8 }}>
           {theme === 'light' ? '🌙 Dark mode' : '☀ Light mode'}
+        </button>
+        <button onClick={signOut}
+          style={{ background: 'transparent', border: `1px solid ${T.border}`, borderRadius: 3,
+            color: T.textDim, fontSize: 11, padding: '6px 12px', cursor: 'pointer', width: '100%',
+            fontFamily: T.font }}>
+          SIGN OUT
         </button>
       </div>
     </div>
@@ -89,7 +98,6 @@ export default function App() {
 
   return (
     <div style={{ minHeight: '100vh', background: T.bg }}>
-      {/* Mobile top bar with hamburger */}
       <div className="mobile-topbar" style={{ display: 'none', alignItems: 'center', gap: 12,
         padding: '10px 16px', background: T.card, borderBottom: `1px solid ${T.border}` }}>
         <button onClick={() => setOpen(true)}
@@ -98,10 +106,8 @@ export default function App() {
       </div>
 
       <div style={{ display: 'flex', minHeight: '100vh' }}>
-        {/* Desktop sidebar */}
         <div className="desktop-sidebar">{Sidebar}</div>
 
-        {/* Mobile drawer + backdrop */}
         {open && (
           <>
             <div onClick={() => setOpen(false)}

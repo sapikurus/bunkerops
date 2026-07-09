@@ -10,7 +10,7 @@ const NODE_TYPES = [
 
 const BLANK = { name: '', code: '', type: 'floating_storage', location: '', active: true };
 
-export default function Nodes() {
+export default function Nodes({ embedded } = {}) {
   const { data: nodes, loading, add, update, remove } = useCollection(COL.nodes);
   const [form, setForm]     = useState(null);   // null = not editing; obj = editing/creating
   const [editId, setEditId] = useState(null);
@@ -41,7 +41,7 @@ export default function Nodes() {
   };
 
   return (
-    <div style={{ padding: 40, maxWidth: 900 }}>
+    <div style={{ padding: embedded ? 0 : 40, maxWidth: 900 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
         <div>
           <div style={{ fontSize: 11, color: T.amber, letterSpacing: 1.5 }}>STORAGE NODES</div>

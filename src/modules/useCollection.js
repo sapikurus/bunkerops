@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { db } from '../firebase';
 import {
-  collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, serverTimestamp,
+  collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, setDoc, serverTimestamp,
 } from 'firebase/firestore';
 
 // Firestore rejects `undefined` field values. Strip them (and recurse into
@@ -39,6 +39,8 @@ export function useCollection(colName) {
   const add    = (obj)      => addDoc(collection(db, colName), { ...clean(obj), createdAt: serverTimestamp() });
   const update = (id, obj)  => updateDoc(doc(db, colName, id), clean(obj));
   const remove = (id)       => deleteDoc(doc(db, colName, id));
+  // Create/overwrite a doc at an explicit ID (used for users keyed by auth UID).
+  const setWithId = (id, obj) => setDoc(doc(db, colName, id), { ...clean(obj), createdAt: serverTimestamp() }, { merge: true });
 
-  return { data, loading, add, update, remove };
+  return { data, loading, add, update, remove, setWithId };
 }

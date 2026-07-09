@@ -8,7 +8,7 @@ import { useCollection } from './useCollection';
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
-export default function Clients() {
+export default function Clients({ embedded } = {}) {
   const { data: clients, loading, add, update, remove } = useCollection(COL.clients);
   const [form, setForm]     = useState(null);
   const [editId, setEditId] = useState(null);
@@ -73,7 +73,7 @@ export default function Clients() {
   };
 
   return (
-    <div style={{ padding: 40, maxWidth: 900 }}>
+    <div style={{ padding: embedded ? 0 : 40, maxWidth: 900 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
         <div>
           <div style={{ fontSize: 11, color: T.amber, letterSpacing: 1.5 }}>CLIENTS</div>
