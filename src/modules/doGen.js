@@ -43,7 +43,17 @@ export function buildDOHtml(cfg) {
     scheme,            // 'VHS' | 'PPS_SALE' — shown as a small tag
   } = cfg;
 
-  const issuer = { ...DO_ISSUERS[issuerKey || (scheme === 'VHS' ? 'USI_PTS' : 'PPS')], logo: issuerLogo };
+  const issuer = { ...DO_ISSUERS[issuerKey || (scheme === 'PPS_SALE' ? 'PPS' : 'USI_PTS')], logo: issuerLogo };
+
+  // Format a date to DD/MM/YYYY. Accepts 'YYYY-MM-DD' or a Date-parseable string.
+  const fmtDate = (d) => {
+    if (!d) return '';
+    const dt = new Date(d);
+    if (isNaN(dt)) return d; // leave as-is if unparseable
+    const dd = String(dt.getDate()).padStart(2, '0');
+    const mm = String(dt.getMonth() + 1).padStart(2, '0');
+    return `${dd}/${mm}/${dt.getFullYear()}`;
+  };
 
   const rows = (items || []).map(it => `
     <tr>
@@ -51,9 +61,6 @@ export function buildDOHtml(cfg) {
       <td>${it.description}</td>
       <td style="text-align:right">${Number(it.qtyLiters).toLocaleString('en-US')}</td>
     </tr>`).join('');
-
-  const logoImg = issuer.logo
-    ? `<img src="${issuer.logo}" style="height:34px;width:auto;float:right" />` : '';
 
   return `<!DOCTYPE html><html><head><meta charset="UTF-8">
 <title>Delivery Order ${brNo}</title>
@@ -87,17 +94,19 @@ export function buildDOHtml(cfg) {
 </style></head><body>
 
   <table style="width:100%;border-collapse:collapse;margin-bottom:6px"><tr>
-    <td style="vertical-align:top">
+    <td style="vertical-align:middle">
       <div class="issuer">
-        ${issuer.logo ? `<img src="${issuer.logo}" style="height:30px;width:auto;margin-bottom:4px" />` : ''}
         <h1>${issuer.name}</h1>
         <div class="addr">${(issuer.addrLines||[]).join('<br>')}</div>
       </div>
     </td>
-    <td style="vertical-align:top;text-align:right;width:260px">
+    <td style="vertical-align:middle;text-align:center;width:120px">
+      ${issuer.logo ? `<img src="${issuer.logo}" style="height:44px;width:auto" />` : ''}
+    </td>
+    <td style="vertical-align:middle;text-align:right;width:250px">
       <table class="brbox" style="margin-left:auto">
-        <tr><td class="k">BR. No</td><td>${brNo}</td></tr>
-        <tr><td class="k">BR. Date</td><td>${brDate}</td></tr>
+        <tr><td class="k">DO. No</td><td>${brNo}</td></tr>
+        <tr><td class="k">DO. Date</td><td>${fmtDate(brDate)}</td></tr>
       </table>
     </td>
   </tr></table>
@@ -132,8 +141,7 @@ export function buildDOHtml(cfg) {
   </table>
 
   <div class="meta">
-    <b>Estimate Delivery Date :</b> ${estDeliveryDate}
-    <span class="tag">${scheme === 'VHS' ? 'VHS / handling' : 'PPS fuel sale'}</span><br>
+    <b>Estimate Delivery Date :</b> ${estDeliveryDate || '-'}<br>
     <b>Note :</b> ${note || '-'}
   </div>
 
