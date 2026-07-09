@@ -236,10 +236,11 @@ export default function BASTModule() {
               <input style={s.input} value={form.uom || ''} onChange={e => setNested('uom', e.target.value)} placeholder="Liter" />
             </div>
             <div>
-              <label style={s.label}>Note / Catatan (disputes, remarks)</label>
-              <textarea style={{ ...s.input, minHeight: 52, resize: 'vertical', fontFamily: T.font }}
+              <label style={s.label}>Note / Catatan / Remarks (disputes, remarks)</label>
+              <textarea style={{ ...s.input, minHeight: 110, resize: 'vertical', fontFamily: T.font, lineHeight: 1.5 }}
+                rows={5}
                 value={form.note || ''} onChange={e => setNested('note', e.target.value)}
-                placeholder="Any remarks about the bunker activity…" />
+                placeholder="Any remarks about the bunker activity — disputes, discrepancies, agreed adjustments…" />
             </div>
           </div>
 

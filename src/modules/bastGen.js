@@ -89,20 +89,20 @@ function bastPage(cfg, copyLabel) {
 
           <p class="closing">Demikian Berita Acara ini dibuat dengan sebenarnya agar dapat dipergunakan seperlunya.</p>
 
-          ${note && note.trim() ? `
           <div class="notebox">
-            <div class="notebox-label">Catatan / Note:</div>
-            <div class="notebox-body">${note.replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>')}</div>
-          </div>` : ''}
+            <div class="notebox-label">Catatan / Remarks:</div>
+            <div class="notebox-body">${note && note.trim() ? note.replace(/</g,'&lt;').replace(/>/g,'&gt;') : ''}</div>
+          </div>
         </div>
       </div>
 
-      ${qrDataUrl ? `<div class="qr-slot">
-        <img src="${qrDataUrl}" alt="verify" />
-        <div class="qc">Scan to verify${verifyCode ? `<br>${verifyCode}` : ''}</div>
-      </div>` : ''}
-
       <div class="sign-anchor">
+        ${qrDataUrl ? `<div class="qr-row">
+          <div class="qr-box">
+            <img src="${qrDataUrl}" alt="verify" />
+            <div class="qc">Scan to verify${verifyCode ? `<br>${verifyCode}` : ''}</div>
+          </div>
+        </div>` : ''}
         <table class="sign">
           <tr class="sh"><td>Diserahkan Oleh</td><td>Diterima Oleh</td><td>Diketahui Oleh</td></tr>
           <tr class="sp"><td></td><td></td><td></td></tr>
@@ -142,22 +142,23 @@ export function buildBASTHtml(cfg) {
   table.hdr .nomor .nk { width:52px; font-weight:normal; background:#fafafa; text-align:center; }
   table.hdr .nomor .nv { font-size:8.5pt; text-align:center; }
   table.hdr .nomor .cp { width:56px; text-align:center; font-weight:bold; font-size:9pt; }
-  .body { padding:12px 16px 6px; font-size:10pt; }
-  .intro { line-height:1.6; margin-bottom:12px; }
-  .sec { margin:10px 0 3px; font-size:10pt; }
+  .body { padding:16px 20px 8px; font-size:10pt; }
+  .intro { line-height:1.9; margin-bottom:18px; }
+  .sec { margin:16px 0 5px; font-size:10pt; }
   .sec .num { display:inline-block; width:26px; }
   table.kv { border-collapse:collapse; margin-left:26px; }
-  table.kv td { font-size:10pt; padding:1.5px 0; vertical-align:top; }
-  table.kv .k { width:130px; }
+  table.kv td { font-size:10pt; padding:3.5px 0; vertical-align:top; }
+  table.kv .k { width:140px; }
   table.kv .c { width:12px; }
   table.kv .v { padding-left:6px; }
-  .closing { margin:14px 0 10px; font-size:10pt; }
-  .notebox { margin:10px 0; border:1px solid #999; border-radius:3px; padding:8px 10px; }
-  .notebox-label { font-size:8.5pt; font-weight:bold; color:#444; margin-bottom:3px; }
-  .notebox-body { font-size:9pt; color:#111; min-height:24px; line-height:1.5; }
-  .qr-slot { position:absolute; bottom:6mm; right:8mm; text-align:center; }
-  .qr-slot img { width:64px; height:64px; }
-  .qr-slot .qc { font-size:6pt; color:#666; margin-top:2px; }
+  .closing { margin:20px 0 12px; font-size:10pt; }
+  .notebox { margin:12px 0; border:1px solid #999; border-radius:3px; padding:8px 10px; }
+  .notebox-label { font-size:8.5pt; font-weight:bold; color:#444; margin-bottom:4px; }
+  .notebox-body { font-size:9pt; color:#111; min-height:72px; line-height:1.6; white-space:pre-wrap; }
+  .qr-row { display:flex; justify-content:flex-end; padding:0 4px 8px; }
+  .qr-box { text-align:center; }
+  .qr-box img { width:60px; height:60px; }
+  .qr-box .qc { font-size:6pt; color:#666; margin-top:2px; line-height:1.3; }
   table.sign { width:100%; border-collapse:collapse; }
   table.sign td { border:1px solid #000; text-align:center; font-size:9.5pt; }
   table.sign .sh td { padding:5px; }
