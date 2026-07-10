@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { T, s } from '../tokens';
-import { COL, ISSUERS, NODES, formatDoNumber, formatBastNumber } from '../config';
+import { COL, ISSUERS, NODES, CARGO_OWNER, formatDoNumber, formatBastNumber } from '../config';
 import { useCollection } from './useCollection';
 import { allocateNumber } from './counters';
 import { buildDOHtml } from './doGen';
@@ -55,6 +55,7 @@ export default function DeliveryOrders() {
       dispatchedVolumeL: r.requestedVolumeL,   // editable — actual dispatched
       soNumber: r.soNumber || '',
       deliveredFrom: r.nodeName || node?.name || '',
+      nodePort: node?.location || '',
       clientPoRef: r.galleyPoRef || '',
       brDate: todayISO(),
       estDeliveryDate: '',
@@ -115,14 +116,19 @@ export default function DeliveryOrders() {
         const year = new Date(form.brDate).getFullYear();
         const bseq = await allocateNumber('bast', year);
         const nomorBast = formatBastNumber({ seq: bseq, monthIndex: romanMonth(form.brDate), year });
-        const issuerName = ISSUERS[form.issuerKey]?.name || '';
+        const cargoOwner = CARGO_OWNER[form.scheme] || ISSUERS[form.issuerKey]?.name || '';
         await bastC.add({
           deliveryOrderId: doRef.id,
           nomorBast,
           tanggalBast: form.brDate,
-          supplier:    { name: issuerName, deliveryOrder: brNo },
-          penyalur:    { name: issuerName, vesselName: '', doPoSpk: brNo, quantity: String(Number(form.dispatchedVolumeL) || 0) },
-          transportir: { name: ISSUERS.USI_PTS.name, vesselName: '', nakhoda: '' },
+          // Supplier = cargo owner (scheme-driven)
+          supplier:    { name: cargoOwner, deliveryOrder: brNo },
+          // Penyalur = distributor (USI PTS by default) + transport vessel/nakhoda
+          penyalur:    { name: ISSUERS.USI_PTS.name, vesselName: '', nakhoda: '', quantity: String(Number(form.dispatchedVolumeL) || 0) },
+          // Recipient = client entity + receiving vessel (from the DO)
+          recipient:   { entityName: form.deliverTo || '', vesselName: form.vesselName || '', receiverName: '' },
+          // Delivered From = source node facility + port (node location)
+          deliveredFrom: { facility: form.deliveredFrom || '', port: form.nodePort || '' },
           qty: { volumeDiterima: '', shoreTank: '', fmAwal: '', fmAkhir: '', suhu: '', jamStart: '', jamEnd: '' },
           uom: 'Liter',
           note: '',
@@ -130,7 +136,7 @@ export default function DeliveryOrders() {
           dispatchedVolumeL: Number(form.dispatchedVolumeL) || 0,
           signers: {
             diserahkan: { name: '', role: 'Master / Chef Officer' },
-            diterima:   { name: '', role: '' },
+            diterima:   { name: '', role: 'Penerima' },
             diketahui:  { name: '', role: 'SpV USIPTS' },
           },
           status: 'blank',   // 'blank' = printed pre-bunker; 'bast_done' = filled post-bunker

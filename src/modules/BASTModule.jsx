@@ -58,7 +58,8 @@ export default function BASTModule() {
         hari: INDO_DAYS[d.getDay()],
         supplier: form.supplier,
         penyalur: form.penyalur,
-        transportir: form.transportir,
+        recipient: form.recipient,
+        deliveredFrom: form.deliveredFrom,
         qty: form.qty,
         uom: form.uom || 'Liter',
         note: form.note || '',
@@ -96,7 +97,8 @@ export default function BASTModule() {
       tanggalTeks: teks,
       supplier: b.supplier,
       penyalur: b.penyalur,
-      transportir: b.transportir,
+      recipient: b.recipient || { entityName: '', vesselName: '', receiverName: '' },
+      deliveredFrom: b.deliveredFrom || { facility: '', port: '' },
       qty: b.qty,
       uom: b.uom || 'Liter',
       note: b.note || '',
@@ -166,19 +168,53 @@ export default function BASTModule() {
             </div>
           </div>
 
-          {/* Penyalur / Transportir vessels */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
+          {/* Supplier (cargo owner) — editable */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12, marginBottom: 12 }}>
             <div>
-              <label style={s.label}>Penyalur Vessel</label>
-              <input style={s.input} value={form.penyalur.vesselName} onChange={e => setNested('penyalur.vesselName', e.target.value)} />
+              <label style={s.label}>Supplier / Cargo Owner</label>
+              <input style={s.input} value={form.supplier?.name || ''} onChange={e => setNested('supplier.name', e.target.value)} />
+            </div>
+          </div>
+
+          {/* Penyalur (distributor) + transport vessel/nakhoda */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
+            <div>
+              <label style={s.label}>Penyalur (Distributor)</label>
+              <input style={s.input} value={form.penyalur?.name || ''} onChange={e => setNested('penyalur.name', e.target.value)} />
             </div>
             <div>
-              <label style={s.label}>Transportir Vessel</label>
-              <input style={s.input} value={form.transportir.vesselName} onChange={e => setNested('transportir.vesselName', e.target.value)} placeholder="Norlha 6" />
+              <label style={s.label}>Transport Vessel</label>
+              <input style={s.input} value={form.penyalur?.vesselName || ''} onChange={e => setNested('penyalur.vesselName', e.target.value)} placeholder="Norlha 6" />
             </div>
             <div>
               <label style={s.label}>Nakhoda</label>
-              <input style={s.input} value={form.transportir.nakhoda} onChange={e => setNested('transportir.nakhoda', e.target.value)} />
+              <input style={s.input} value={form.penyalur?.nakhoda || ''} onChange={e => setNested('penyalur.nakhoda', e.target.value)} />
+            </div>
+          </div>
+
+          {/* Recipient + Delivered From */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 12, marginBottom: 12 }}>
+            <div>
+              <label style={s.label}>Recipient / Client</label>
+              <input style={s.input} value={form.recipient?.entityName || ''} onChange={e => setNested('recipient.entityName', e.target.value)} />
+            </div>
+            <div>
+              <label style={s.label}>Receiving Vessel</label>
+              <input style={s.input} value={form.recipient?.vesselName || ''} onChange={e => setNested('recipient.vesselName', e.target.value)} />
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
+            <div>
+              <label style={s.label}>Receiver Name (Penerima)</label>
+              <input style={s.input} value={form.recipient?.receiverName || ''} onChange={e => setNested('recipient.receiverName', e.target.value)} />
+            </div>
+            <div>
+              <label style={s.label}>Delivered From (Facility)</label>
+              <input style={s.input} value={form.deliveredFrom?.facility || ''} onChange={e => setNested('deliveredFrom.facility', e.target.value)} />
+            </div>
+            <div>
+              <label style={s.label}>Port</label>
+              <input style={s.input} value={form.deliveredFrom?.port || ''} onChange={e => setNested('deliveredFrom.port', e.target.value)} />
             </div>
           </div>
 

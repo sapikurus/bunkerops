@@ -10,9 +10,10 @@ function bastPage(cfg, copyLabel) {
     usiLogo,
     nomorBast, tanggalBast,          // doc no + date
     hari, tanggalTeks,               // 'Jumat', '19 Desember 2025'
-    supplier,                        // { name, deliveryOrder }
-    penyalur,                        // { name, vesselName, doPoSpk, quantity }
-    transportir,                     // { name, vesselName, nakhoda }
+    supplier,                        // { name (cargo owner), deliveryOrder }
+    penyalur,                        // { name (distributor), vesselName, nakhoda, quantity }
+    recipient,                       // { entityName, vesselName, receiverName }
+    deliveredFrom,                   // { facility, port }
     qty,                             // { volumeDiterima, shoreTank, fmAwal, fmAkhir, suhu, jamStart, jamEnd }
     uom,                             // unit of measurement, e.g. 'Liter'
     note,                            // free-text remarks (disputes etc.)
@@ -23,7 +24,6 @@ function bastPage(cfg, copyLabel) {
 
   const wmColor = copyLabel === 'ORIGINAL' ? '#d33' : '#d9a3a3';
   const row = (k, v) => `<tr><td class="k">${k}</td><td class="c">:</td><td class="v">${v ?? ''}</td></tr>`;
-  // Format a numeric string with id-ID thousand separators + optional unit; pass through non-numeric.
   const u = uom ? ` ${uom}` : '';
   const num = (v) => {
     if (v === '' || v == null) return '';
@@ -55,28 +55,34 @@ function bastPage(cfg, copyLabel) {
           <p class="intro">Dengan ini menyatakan bahwa pada hari, &nbsp;<b>${hari}</b>&nbsp;, tanggal, &nbsp;<b>${tanggalTeks}</b><br>
           telah menyerahkan BBM Bio Solar dengan keterangan sebagai berikut :</p>
 
-          <div class="sec"><span class="num">1.</span><b>Supplier</b></div>
+          <div class="sec"><span class="num">1.</span><b>Supplier (Cargo Owner)</b></div>
           <table class="kv">
             ${row('Name', supplier.name)}
             ${row('Delivery Order', supplier.deliveryOrder)}
           </table>
 
-          <div class="sec"><span class="num">2.</span><b>Penyalur</b></div>
+          <div class="sec"><span class="num">2.</span><b>Penyalur (Distributor)</b></div>
           <table class="kv">
             ${row('Name', penyalur.name)}
             ${row('Vessel Name', penyalur.vesselName)}
-            ${row('DO/PO/SPK', penyalur.doPoSpk)}
+            ${row('Nakhoda', penyalur.nakhoda)}
             ${row('Quantity', num(penyalur.quantity))}
           </table>
 
-          <div class="sec"><span class="num">3.</span><b>Transportir</b></div>
+          <div class="sec"><span class="num">3.</span><b>Recipient (Penerima)</b></div>
           <table class="kv">
-            ${row('Name', transportir.name)}
-            ${row('Vessel Name', transportir.vesselName)}
-            ${row('Nakhoda', transportir.nakhoda)}
+            ${row('Client', recipient.entityName)}
+            ${row('Vessel Name', recipient.vesselName)}
+            ${row('Penerima', recipient.receiverName)}
           </table>
 
-          <div class="sec"><span class="num">4.</span><b>Quantity</b></div>
+          <div class="sec"><span class="num">4.</span><b>Delivered From</b></div>
+          <table class="kv">
+            ${row('Facility', deliveredFrom.facility)}
+            ${row('Port', deliveredFrom.port)}
+          </table>
+
+          <div class="sec"><span class="num">5.</span><b>Quantity</b></div>
           <table class="kv">
             ${row('Volume Diterima', num(qty.volumeDiterima))}
             ${row('Shore Tank', num(qty.shoreTank))}

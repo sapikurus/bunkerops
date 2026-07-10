@@ -39,6 +39,12 @@ export const SCHEMES = {
   NON_PPS_SALE: { key: 'NON_PPS_SALE', label: 'Non-PPS Sale (MBSS-owned, stored/VHS)',  issuer: 'USI_PTS', bucket: 'MBSS' },
 };
 
+// Cargo owner (BAST "Supplier") by scheme. Editable on the BAST if needed.
+export const CARGO_OWNER = {
+  PPS_SALE:     'PT Petroprima Sejahtera',
+  NON_PPS_SALE: 'PT Galley Adhika Arnawama (Daidan Group)',
+};
+
 // Storage-loss tolerance: 0.3% of incoming C, owner absorbs, USI PTS compensates excess.
 export const TOLERANCE_PCT = 0.3;
 
