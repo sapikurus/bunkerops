@@ -84,31 +84,36 @@ function bastPage(cfg, copyLabel) {
 
           <div class="sec"><span class="num">5.</span><b>Quantity</b></div>
           <table class="kv">
-            ${row('Volume Diterima', num(qty.volumeDiterima))}
+            ${row('Volume Observed', num(qty.volumeObserved))}
+            ${row('Liter Standard (@15°C)', num(qty.literStandard))}
             ${row('Shore Tank', num(qty.shoreTank))}
             ${row('Flow meter Awal', num(qty.fmAwal))}
             ${row('Flow meter Akhir', num(qty.fmAkhir))}
-            ${row('Suhu', qty.suhu)}
+            ${row('Suhu / Temp (°C)', qty.suhu)}
+            ${row('Density', qty.density)}
+            ${row('Water Content', qty.waterContent)}
             ${row('Jam Start Flow', qty.jamStart)}
             ${row('Jam End Flow', qty.jamEnd)}
           </table>
 
           <p class="closing">Demikian Berita Acara ini dibuat dengan sebenarnya agar dapat dipergunakan seperlunya.</p>
 
-          <div class="notebox">
-            <div class="notebox-label">Catatan / Remarks:</div>
-            <div class="notebox-body">${note && note.trim() ? note.replace(/</g,'&lt;').replace(/>/g,'&gt;') : ''}</div>
-          </div>
+          <table class="remarks-qr"><tr>
+            <td class="rq-note">
+              <div class="notebox">
+                <div class="notebox-label">Catatan / Remarks:</div>
+                <div class="notebox-body">${note && note.trim() ? note.replace(/</g,'&lt;').replace(/>/g,'&gt;') : ''}</div>
+              </div>
+            </td>
+            <td class="rq-qr">
+              ${qrDataUrl ? `<img src="${qrDataUrl}" alt="verify" />
+              <div class="qc">Scan to verify${verifyCode ? `<br>${verifyCode}` : ''}</div>` : ''}
+            </td>
+          </tr></table>
         </div>
       </div>
 
       <div class="sign-anchor">
-        ${qrDataUrl ? `<div class="qr-row">
-          <div class="qr-box">
-            <img src="${qrDataUrl}" alt="verify" />
-            <div class="qc">Scan to verify${verifyCode ? `<br>${verifyCode}` : ''}</div>
-          </div>
-        </div>` : ''}
         <table class="sign">
           <tr class="sh"><td>Diserahkan Oleh</td><td>Diterima Oleh</td><td>Diketahui Oleh</td></tr>
           <tr class="sp"><td></td><td></td><td></td></tr>
@@ -148,23 +153,24 @@ export function buildBASTHtml(cfg) {
   table.hdr .nomor .nk { width:52px; font-weight:normal; background:#fafafa; text-align:center; }
   table.hdr .nomor .nv { font-size:8.5pt; text-align:center; }
   table.hdr .nomor .cp { width:56px; text-align:center; font-weight:bold; font-size:9pt; }
-  .body { padding:16px 20px 8px; font-size:10pt; }
-  .intro { line-height:1.9; margin-bottom:18px; }
-  .sec { margin:16px 0 5px; font-size:10pt; }
+  .body { padding:14px 20px 8px; font-size:10pt; }
+  .intro { line-height:1.8; margin-bottom:14px; }
+  .sec { margin:12px 0 4px; font-size:10pt; }
   .sec .num { display:inline-block; width:26px; }
   table.kv { border-collapse:collapse; margin-left:26px; }
-  table.kv td { font-size:10pt; padding:3.5px 0; vertical-align:top; }
+  table.kv td { font-size:10pt; padding:2.5px 0; vertical-align:top; }
   table.kv .k { width:140px; }
   table.kv .c { width:12px; }
   table.kv .v { padding-left:6px; }
-  .closing { margin:20px 0 12px; font-size:10pt; }
-  .notebox { margin:12px 0; border:1px solid #999; border-radius:3px; padding:8px 10px; }
+  .closing { margin:16px 0 10px; font-size:10pt; }
+  .remarks-qr { width:100%; border-collapse:collapse; }
+  .remarks-qr .rq-note { width:80%; vertical-align:top; padding-right:12px; }
+  .remarks-qr .rq-qr { width:20%; vertical-align:bottom; text-align:center; }
+  .remarks-qr .rq-qr img { width:66px; height:66px; }
+  .remarks-qr .rq-qr .qc { font-size:6pt; color:#666; margin-top:2px; line-height:1.3; }
+  .notebox { border:1px solid #999; border-radius:3px; padding:8px 10px; }
   .notebox-label { font-size:8.5pt; font-weight:bold; color:#444; margin-bottom:4px; }
-  .notebox-body { font-size:9pt; color:#111; min-height:72px; line-height:1.6; white-space:pre-wrap; }
-  .qr-row { display:flex; justify-content:flex-end; padding:0 4px 8px; }
-  .qr-box { text-align:center; }
-  .qr-box img { width:60px; height:60px; }
-  .qr-box .qc { font-size:6pt; color:#666; margin-top:2px; line-height:1.3; }
+  .notebox-body { font-size:9pt; color:#111; min-height:58px; line-height:1.6; white-space:pre-wrap; }
   table.sign { width:100%; border-collapse:collapse; }
   table.sign td { border:1px solid #000; text-align:center; font-size:9.5pt; }
   table.sign .sh td { padding:5px; }

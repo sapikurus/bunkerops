@@ -39,13 +39,14 @@ export default function BASTModule() {
     return next;
   });
 
+  // Transit loss uses the temperature-corrected standard litres (true fuel quantity).
   const transitLoss = form
-    ? (Number(form.dispatchedVolumeL) || 0) - (Number(form.qty.volumeDiterima) || 0)
+    ? (Number(form.dispatchedVolumeL) || 0) - (Number(form.qty.literStandard) || 0)
     : 0;
 
   const save = async () => {
     if (busy) return;
-    if (!form.qty.volumeDiterima) { alert('Volume Diterima (received) is required.'); return; }
+    if (!form.qty.literStandard) { alert('Liter Standard (@15°C) is required.'); return; }
     setBusy(true);
     try {
       const d = new Date(form.tanggalBast);
@@ -222,22 +223,37 @@ export default function BASTModule() {
           <div style={{ fontSize: 10, color: T.textDim, letterSpacing: 1.5, marginBottom: 8 }}>QUANTITY</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10, marginBottom: 8 }}>
             <div>
-              <label style={s.label}>Volume Diterima (R)</label>
-              <VolumeInput value={form.qty.volumeDiterima}
-                onChange={v => setNested('qty.volumeDiterima', v)} placeholder="398.400" />
+              <label style={s.label}>Volume Observed</label>
+              <VolumeInput value={form.qty.volumeObserved}
+                onChange={v => setNested('qty.volumeObserved', v)} placeholder="observed vol" />
+            </div>
+            <div>
+              <label style={s.label}>Liter Standard @15°C (R)</label>
+              <VolumeInput value={form.qty.literStandard}
+                onChange={v => setNested('qty.literStandard', v)} placeholder="corrected vol" />
             </div>
             <div>
               <label style={s.label}>Dispatched (D)</label>
               <input style={{ ...s.input, opacity: .6 }} value={fmtL(form.dispatchedVolumeL)} disabled />
             </div>
             <div>
-              <label style={s.label}>Transit Loss (D−R)</label>
+              <label style={s.label}>Transit Loss (D−R std)</label>
               <input style={{ ...s.input, opacity: .8, color: transitLoss > 0 ? T.red : T.text }}
                 value={fmtL(transitLoss)} disabled />
             </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 8 }}>
             <div>
-              <label style={s.label}>Suhu</label>
-              <input style={s.input} value={form.qty.suhu} onChange={e => setNested('qty.suhu', e.target.value)} />
+              <label style={s.label}>Suhu / Temp (°C)</label>
+              <input style={s.input} value={form.qty.suhu} onChange={e => setNested('qty.suhu', e.target.value)} placeholder="32" />
+            </div>
+            <div>
+              <label style={s.label}>Density</label>
+              <input style={s.input} value={form.qty.density} onChange={e => setNested('qty.density', e.target.value)} placeholder="0.845" />
+            </div>
+            <div>
+              <label style={s.label}>Water Content</label>
+              <input style={s.input} value={form.qty.waterContent} onChange={e => setNested('qty.waterContent', e.target.value)} placeholder="0.05%" />
             </div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10, marginBottom: 16 }}>
@@ -333,7 +349,7 @@ export default function BASTModule() {
                   </span>
                 </td>
                 <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font }}>
-                  {b.status === 'blank' ? '—' : fmtL(b.qty?.volumeDiterima)}
+                  {b.status === 'blank' ? '—' : fmtL(b.qty?.literStandard)}
                 </td>
                 <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font, color: b.transitLossL > 0 ? T.red : T.text }}>
                   {b.status === 'blank' ? '—' : fmtL(b.transitLossL)}

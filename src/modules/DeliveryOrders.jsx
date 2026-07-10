@@ -129,7 +129,7 @@ export default function DeliveryOrders() {
           recipient:   { entityName: form.deliverTo || '', vesselName: form.vesselName || '', receiverName: '' },
           // Delivered From = source node facility + port (node location)
           deliveredFrom: { facility: form.deliveredFrom || '', port: form.nodePort || '' },
-          qty: { volumeDiterima: '', shoreTank: '', fmAwal: '', fmAkhir: '', suhu: '', jamStart: '', jamEnd: '' },
+          qty: { volumeObserved: '', literStandard: '', shoreTank: '', fmAwal: '', fmAkhir: '', suhu: '', density: '', waterContent: '', jamStart: '', jamEnd: '' },
           uom: 'Liter',
           note: '',
           transitLossL: null,

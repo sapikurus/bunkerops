@@ -70,7 +70,7 @@ export default function Verify({ docType, docId }) {
         ['BAST Number', data.nomorBast],
         ['Date', data.tanggalBast],
         ['DO Reference', data.supplier?.deliveryOrder],
-        ['Volume Diterima (L)', data.qty?.volumeDiterima ? (Number(data.qty.volumeDiterima)||0).toLocaleString('id-ID') : '—'],
+        ['Liter Standard @15°C', data.qty?.literStandard ? (Number(data.qty.literStandard)||0).toLocaleString('id-ID') : '—'],
         ['Status', data.status === 'blank' ? 'blank (pre-bunker)' : 'completed'],
       ];
 
