@@ -5,6 +5,7 @@ import { canAccess, ROLES } from './roles';
 import SalesRequests from './modules/SalesRequests';
 import DeliveryOrders from './modules/DeliveryOrders';
 import BASTModule from './modules/BASTModule';
+import StockCards from './modules/StockCards';
 import Settings from './modules/Settings';
 
 // Menu items with the capability each requires. Nodes/Clients now live inside Settings.
@@ -12,7 +13,7 @@ const MENU = [
   { key: 'sales',    label: 'Sales Requests',  icon: '📋', cap: 'salesOrder' },
   { key: 'do',       label: 'Delivery Orders', icon: '📦', cap: 'deliveryOrder' },
   { key: 'bast',     label: 'BAST',            icon: '📑', cap: 'bast' },
-  { key: 'stock',    label: 'Stock Cards',     icon: '📊', cap: 'stockCards', soon: true },
+  { key: 'stock',    label: 'Stock Cards',     icon: '📊', cap: 'stockCards' },
   { key: 'settings', label: 'Settings',        icon: '⚙',  cap: null }, // shown if any settings sub-tab is allowed
 ];
 
@@ -33,12 +34,8 @@ export default function App({ user, role, signOut }) {
       case 'sales':    return <SalesRequests role={role} />;
       case 'do':       return <DeliveryOrders role={role} />;
       case 'bast':     return <BASTModule role={role} />;
+      case 'stock':    return <StockCards role={role} user={user} />;
       case 'settings': return <Settings role={role} />;
-      case 'stock':
-        return <div style={{ color: T.textDim, padding: 40, fontSize: 13 }}>
-          <div style={{ fontSize: 16, color: T.text, marginBottom: 8 }}>Stock Cards</div>
-          Module not built yet.
-        </div>;
       default:
         return <div style={{ color: T.textDim, padding: 40 }}>Select a menu.</div>;
     }
