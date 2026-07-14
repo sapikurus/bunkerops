@@ -51,7 +51,7 @@ export default function DeliveryOrders() {
       deliverTo: r.entityName,
       deliverLocation: r.deliveryLocation,
       vesselName: r.vesselName,
-      fuelDescription: r.fuelTypeName,
+      fuelDescription: r.fuelTypeName || r.fuelTypeShort || '',
       dispatchedVolumeL: r.requestedVolumeL,   // editable — actual dispatched
       soNumber: r.soNumber || '',
       deliveredFrom: r.nodeName || node?.name || '',
@@ -97,7 +97,7 @@ export default function DeliveryOrders() {
         deliverTo: form.deliverTo,
         deliverLocation: form.deliverLocation,
         vesselName: form.vesselName,
-        items: [{ no: 1, description: form.fuelDescription, qtyLiters: Number(form.dispatchedVolumeL) || 0 }],
+        items: [{ no: 1, description: form.fuelDescription || '-', qtyLiters: Number(form.dispatchedVolumeL) || 0 }],
         dispatchedVolumeL: Number(form.dispatchedVolumeL) || 0,
         estDeliveryDate: form.estDeliveryDate || '',
         note: form.note || '-',

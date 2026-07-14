@@ -29,7 +29,12 @@ export default function BASTModule() {
   // BASTs are auto-created (blank) when a DO is issued. This module FILLS them.
   const blankBASTs = bastC.data.filter(b => b.status === 'blank');
 
-  const startEdit = (b) => { setForm(JSON.parse(JSON.stringify(b))); setEditId(b.id); };
+  const startEdit = (b) => {
+    const copy = JSON.parse(JSON.stringify(b));
+    // A blank BAST inherited the DO's creation date; default it to today (actual delivery day).
+    if (b.status === 'blank') copy.tanggalBast = todayISO();
+    setForm(copy); setEditId(b.id);
+  };
   const cancel = () => { setForm(null); setEditId(null); };
   const setNested = (path, v) => setForm(f => {
     const next = JSON.parse(JSON.stringify(f));
