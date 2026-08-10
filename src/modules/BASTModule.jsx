@@ -1,15 +1,22 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { T, s } from '../tokens';
-import { COL, ISSUERS } from '../config';
+import { COL, ISSUERS, CARGO_OWNER } from '../config';
 import { useCollection } from './useCollection';
 import { buildBASTHtml } from './bastGen';
 import VolumeInput from './VolumeInput';
 import { USI_LOGO } from './assets';
 import { makeQR } from './qr';
+import { usePagination, PaginationBar, useIsNarrow, diffDOtoBAST } from './listUtils';
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const INDO_MONTHS = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
 const INDO_DAYS = ['Minggu','Senin','Selasa','Rabu','Kamis','Jumat','Sabtu'];
+
+// Leading BAST sequence number for tiebreak sorting ("022/PTS/BAST/VIII/26" -> 22).
+const bastSeq = (b) => {
+  const m = String(b?.nomorBast || '').match(/^(\d+)/);
+  return m ? parseInt(m[1], 10) : 0;
+};
 
 function openPrint(html) {
   const w = window.open('', '_blank');
@@ -25,13 +32,38 @@ export default function BASTModule() {
   const [form, setForm]     = useState(null);
   const [editId, setEditId] = useState(null);
   const [busy, setBusy]     = useState(false);
+  const [syncBusy, setSyncBusy] = useState({});
 
-  // BASTs are auto-created (blank) when a DO is issued. This module FILLS them.
+  const narrow = useIsNarrow();
+
   const blankBASTs = bastC.data.filter(b => b.status === 'blank');
+
+  // Item 3: order the full list — date desc, then sequence number desc.
+  const sortedBASTs = useMemo(() => {
+    return [...bastC.data].sort((a, b) => {
+      const d = String(b.tanggalBast || '').localeCompare(String(a.tanggalBast || ''));
+      if (d !== 0) return d;
+      return bastSeq(b) - bastSeq(a);
+    });
+  }, [bastC.data]);
+
+  const pg = usePagination(sortedBASTs, 20);
+
+  const doById = useMemo(() => {
+    const m = {};
+    for (const d of doC.data) m[d.id] = d;
+    return m;
+  }, [doC.data]);
+
+  // Discrepancy between a BAST and its DO (item 2 companion — for the sync action).
+  const diffsForBAST = (b) => {
+    const d = doById[b.deliveryOrderId];
+    if (!d) return [];
+    return diffDOtoBAST(d, b);
+  };
 
   const startEdit = (b) => {
     const copy = JSON.parse(JSON.stringify(b));
-    // A blank BAST inherited the DO's creation date; default it to today (actual delivery day).
     if (b.status === 'blank') copy.tanggalBast = todayISO();
     setForm(copy); setEditId(b.id);
   };
@@ -44,10 +76,41 @@ export default function BASTModule() {
     return next;
   });
 
-  // Transit loss uses the temperature-corrected standard litres (true fuel quantity).
   const transitLoss = form
     ? (Number(form.dispatchedVolumeL) || 0) - (Number(form.qty.literStandard) || 0)
     : 0;
+
+  // Pull the BAST's inherited fields back in line with its DO.
+  // For blank BASTs this is silent-safe; for filled ones we confirm first.
+  const syncFromDO = async (b) => {
+    const d = doById[b.deliveryOrderId];
+    if (!d) { alert('No linked DO found for this BAST.'); return; }
+    const diffs = diffDOtoBAST(d, b);
+    if (!diffs.length) { alert('This BAST already matches its DO.'); return; }
+
+    let msg = `Update ${diffs.length} field(s) on BAST ${b.nomorBast} from DO ${d.brNo}?\n\n` +
+      diffs.map(x => `• ${x.label}: ${x.bastVal ?? '—'} → ${x.doVal ?? '—'}`).join('\n');
+    if (b.status !== 'blank') {
+      msg += `\n\nNOTE: this BAST is already filled. Header fields will be updated; received volumes and transit loss are NOT touched.`;
+    }
+    if (!confirm(msg)) return;
+
+    setSyncBusy(m => ({ ...m, [b.id]: true }));
+    try {
+      const cargoOwner = CARGO_OWNER[d.scheme] || ISSUERS[d.issuerKey]?.name || '';
+      await bastC.update(b.id, {
+        supplier:      { ...(b.supplier || {}), name: cargoOwner, deliveryOrder: d.brNo },
+        recipient:     { ...(b.recipient || {}), entityName: d.deliverTo || '', vesselName: d.vesselName || '' },
+        deliveredFrom: { ...(b.deliveredFrom || {}), facility: d.deliveredFrom || '', port: d.nodePort ?? b.deliveredFrom?.port ?? '' },
+        dispatchedVolumeL: Number(d.dispatchedVolumeL) || 0,
+        penyalur:      { ...(b.penyalur || {}), quantity: String(Number(d.dispatchedVolumeL) || 0) },
+      });
+    } catch (e) {
+      alert('Error syncing BAST: ' + e.message);
+    } finally {
+      setSyncBusy(m => ({ ...m, [b.id]: false }));
+    }
+  };
 
   const save = async () => {
     if (busy) return;
@@ -55,7 +118,6 @@ export default function BASTModule() {
     setBusy(true);
     try {
       const d = new Date(form.tanggalBast);
-      // The BAST number already exists (allocated when the DO was issued). We only fill.
       const payload = {
         deliveryOrderId: form.deliveryOrderId,
         nomorBast: form.nomorBast,
@@ -75,7 +137,6 @@ export default function BASTModule() {
         status: 'bast_done',
       };
       await bastC.update(editId, payload);
-      // advance DO + its sales request now that received volume is recorded
       if (form.deliveryOrderId) {
         await doC.update(form.deliveryOrderId, { status: 'delivered' });
         const theDO = doC.data.find(x => x.id === form.deliveryOrderId);
@@ -121,9 +182,11 @@ export default function BASTModule() {
   };
 
   const fmtL = n => (Number(n) || 0).toLocaleString('id-ID');
+  const clientOf = b => b.recipient?.entityName || '—';
+  const vesselOf = b => b.recipient?.vesselName || '—';
 
   return (
-    <div style={{ padding: 40, maxWidth: 1000 }}>
+    <div style={{ padding: narrow ? 16 : 40, maxWidth: 1000 }}>
       <div style={{ marginBottom: 20 }}>
         <div style={{ fontSize: 11, color: T.amber, letterSpacing: 1.5 }}>BAST — BERITA ACARA SERAH TERIMA</div>
         <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>
@@ -131,7 +194,7 @@ export default function BASTModule() {
         </div>
       </div>
 
-      {/* Blank BASTs awaiting fill (auto-created with their DO; printable pre-bunker) */}
+      {/* Blank BASTs awaiting fill */}
       {!form && blankBASTs.length > 0 && (
         <div style={{ ...s.card, marginBottom: 20 }}>
           <div style={{ fontSize: 10, color: T.textDim, letterSpacing: 1.5, marginBottom: 10 }}>
@@ -139,12 +202,12 @@ export default function BASTModule() {
           </div>
           {blankBASTs.map(b => (
             <div key={b.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-              padding: '8px 0', borderBottom: `1px solid ${T.border}` }}>
+              gap: 8, flexWrap: 'wrap', padding: '8px 0', borderBottom: `1px solid ${T.border}` }}>
               <div style={{ fontSize: 12 }}>
                 <span style={{ color: T.amber, fontFamily: T.font, fontSize: 11 }}>{b.nomorBast}</span>
-                <span style={{ color: T.textDim }}> · DO {b.supplier?.deliveryOrder} · {fmtL(b.dispatchedVolumeL)} L dispatched</span>
+                <span style={{ color: T.textDim }}> · DO {b.supplier?.deliveryOrder} · {clientOf(b)} · {vesselOf(b)} · {fmtL(b.dispatchedVolumeL)} L</span>
               </div>
-              <div style={{ display: 'flex', gap: 6 }}>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 <button onClick={() => printBAST(b)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10 }}>
                   PRINT BLANK
                 </button>
@@ -167,14 +230,14 @@ export default function BASTModule() {
             Against DO <span style={{ color: T.amber }}>{form.supplier.deliveryOrder}</span>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 14 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: narrow ? '1fr' : '1fr 1fr 1fr', gap: 12, marginBottom: 14 }}>
             <div>
               <label style={s.label}>BAST Date</label>
               <input style={s.input} type="date" value={form.tanggalBast} onChange={e => setNested('tanggalBast', e.target.value)} />
             </div>
           </div>
 
-          {/* Supplier (cargo owner) — editable */}
+          {/* Supplier */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 12, marginBottom: 12 }}>
             <div>
               <label style={s.label}>Supplier / Cargo Owner</label>
@@ -182,8 +245,8 @@ export default function BASTModule() {
             </div>
           </div>
 
-          {/* Penyalur (distributor) + transport vessel/nakhoda */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
+          {/* Penyalur */}
+          <div style={{ display: 'grid', gridTemplateColumns: narrow ? '1fr' : '1.4fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
             <div>
               <label style={s.label}>Penyalur (Distributor)</label>
               <input style={s.input} value={form.penyalur?.name || ''} onChange={e => setNested('penyalur.name', e.target.value)} />
@@ -199,7 +262,7 @@ export default function BASTModule() {
           </div>
 
           {/* Recipient + Delivered From */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 12, marginBottom: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: narrow ? '1fr' : '1.4fr 1fr', gap: 12, marginBottom: 12 }}>
             <div>
               <label style={s.label}>Recipient / Client</label>
               <input style={s.input} value={form.recipient?.entityName || ''} onChange={e => setNested('recipient.entityName', e.target.value)} />
@@ -209,7 +272,7 @@ export default function BASTModule() {
               <input style={s.input} value={form.recipient?.vesselName || ''} onChange={e => setNested('recipient.vesselName', e.target.value)} />
             </div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: narrow ? '1fr' : '1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
             <div>
               <label style={s.label}>Receiver Name (Penerima)</label>
               <input style={s.input} value={form.recipient?.receiverName || ''} onChange={e => setNested('recipient.receiverName', e.target.value)} />
@@ -226,7 +289,7 @@ export default function BASTModule() {
 
           {/* Quantity block */}
           <div style={{ fontSize: 10, color: T.textDim, letterSpacing: 1.5, marginBottom: 8 }}>QUANTITY</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10, marginBottom: 8 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: narrow ? '1fr 1fr' : '1fr 1fr 1fr 1fr', gap: 10, marginBottom: 8 }}>
             <div>
               <label style={s.label}>Volume Observed</label>
               <VolumeInput value={form.qty.volumeObserved}
@@ -247,7 +310,7 @@ export default function BASTModule() {
                 value={fmtL(transitLoss)} disabled />
             </div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 8 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: narrow ? '1fr' : '1fr 1fr 1fr', gap: 10, marginBottom: 8 }}>
             <div>
               <label style={s.label}>Suhu / Temp (°C)</label>
               <input style={s.input} value={form.qty.suhu} onChange={e => setNested('qty.suhu', e.target.value)} placeholder="32" />
@@ -261,7 +324,7 @@ export default function BASTModule() {
               <input style={s.input} value={form.qty.waterContent} onChange={e => setNested('qty.waterContent', e.target.value)} placeholder="0.05%" />
             </div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10, marginBottom: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: narrow ? '1fr 1fr' : '1fr 1fr 1fr 1fr', gap: 10, marginBottom: 16 }}>
             <div>
               <label style={s.label}>Shore Tank</label>
               <input style={s.input} value={form.qty.shoreTank} onChange={e => setNested('qty.shoreTank', e.target.value)} />
@@ -287,7 +350,7 @@ export default function BASTModule() {
           </div>
 
           {/* UoM + Note */}
-          <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: 12, marginBottom: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: narrow ? '1fr' : '160px 1fr', gap: 12, marginBottom: 16 }}>
             <div>
               <label style={s.label}>Unit of Measurement</label>
               <input style={s.input} value={form.uom || ''} onChange={e => setNested('uom', e.target.value)} placeholder="Liter" />
@@ -303,7 +366,7 @@ export default function BASTModule() {
 
           {/* Signers */}
           <div style={{ fontSize: 10, color: T.textDim, letterSpacing: 1.5, marginBottom: 8 }}>SIGNERS</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: narrow ? '1fr' : '1fr 1fr 1fr', gap: 10, marginBottom: 16 }}>
             {[['diserahkan','Diserahkan Oleh'],['diterima','Diterima Oleh'],['diketahui','Diketahui Oleh']].map(([who,lbl]) => (
               <div key={who}>
                 <div style={{ fontSize: 9, color: T.textFaint, marginBottom: 4 }}>{lbl}</div>
@@ -329,47 +392,115 @@ export default function BASTModule() {
         <div style={{ color: T.textDim, fontSize: 12 }}>Loading…</div>
       ) : bastC.data.length === 0 ? (
         <div style={{ color: T.textFaint, fontSize: 12, padding: 20 }}>No BAST records yet.</div>
-      ) : (
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead>
-            <tr>
-              <th style={s.th}>BAST NUMBER</th>
-              <th style={s.th}>DATE</th>
-              <th style={s.th}>DO REF</th>
-              <th style={s.th}>STATUS</th>
-              <th style={{ ...s.th, textAlign: 'right' }}>RECEIVED (L)</th>
-              <th style={{ ...s.th, textAlign: 'right' }}>TRANSIT LOSS</th>
-              <th style={s.th}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {bastC.data.map(b => (
-              <tr key={b.id}>
-                <td style={{ ...s.td, fontFamily: T.font, color: T.amber, fontSize: 11 }}>{b.nomorBast}</td>
-                <td style={s.td}>{b.tanggalBast}</td>
-                <td style={{ ...s.td, fontFamily: T.font, fontSize: 10 }}>{b.supplier?.deliveryOrder}</td>
-                <td style={s.td}>
+      ) : narrow ? (
+        // -------- Mobile: stacked cards --------
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {pg.pageRows.map(b => {
+            const diffs = diffsForBAST(b);
+            return (
+              <div key={b.id} style={{ ...s.card, padding: 14 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+                  <span style={{ fontFamily: T.font, color: T.amber, fontSize: 11 }}>{b.nomorBast}</span>
                   <span style={{ fontSize: 10, color: b.status === 'blank' ? T.textDim : T.green }}>
                     {b.status === 'blank' ? 'blank (pre-bunker)' : 'completed'}
                   </span>
-                </td>
-                <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font }}>
-                  {b.status === 'blank' ? '—' : fmtL(b.qty?.literStandard)}
-                </td>
-                <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font, color: b.transitLossL > 0 ? T.red : T.text }}>
-                  {b.status === 'blank' ? '—' : fmtL(b.transitLossL)}
-                </td>
-                <td style={{ ...s.td, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                  <button onClick={() => printBAST(b)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6 }}>PDF</button>
-                  <button onClick={() => startEdit(b)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6 }}>
+                </div>
+                <div style={{ fontSize: 13, color: T.text }}>{clientOf(b)}</div>
+                <div style={{ fontSize: 11, color: T.textDim, display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
+                  <span>{b.tanggalBast}</span>
+                  <span>· {vesselOf(b)}</span>
+                  <span style={{ fontFamily: T.font }}>· DO {b.supplier?.deliveryOrder || '—'}</span>
+                </div>
+                <div style={{ fontSize: 11, color: T.textDim, display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
+                  <span>Received: <span style={{ fontFamily: T.font, color: T.text }}>{b.status === 'blank' ? '—' : fmtL(b.qty?.literStandard)}</span></span>
+                  <span style={{ color: b.transitLossL > 0 ? T.red : T.textDim }}>
+                    · Loss: <span style={{ fontFamily: T.font }}>{b.status === 'blank' ? '—' : fmtL(b.transitLossL)}</span>
+                  </span>
+                </div>
+                {diffs.length > 0 && (
+                  <div style={{ marginTop: 8, fontSize: 10, color: T.amber }}>
+                    ⚠ Differs from DO ({diffs.length} field{diffs.length > 1 ? 's' : ''})
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
+                  <button onClick={() => printBAST(b)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10 }}>PDF</button>
+                  <button onClick={() => startEdit(b)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10 }}>
                     {b.status === 'blank' ? 'FILL' : 'EDIT'}
                   </button>
-                  <button onClick={() => del(b)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, color: T.red }}>DEL</button>
-                </td>
+                  {diffs.length > 0 && (
+                    <button onClick={() => syncFromDO(b)} disabled={syncBusy[b.id]}
+                      style={{ ...s.btn('primary'), padding: '5px 12px', fontSize: 10 }}>
+                      {syncBusy[b.id] ? 'SYNCING…' : 'SYNC FROM DO'}
+                    </button>
+                  )}
+                  <button onClick={() => del(b)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10, color: T.red }}>DEL</button>
+                </div>
+              </div>
+            );
+          })}
+          <PaginationBar {...pg} />
+        </div>
+      ) : (
+        // -------- Desktop: table --------
+        <>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                <th style={s.th}>BAST NUMBER</th>
+                <th style={s.th}>DATE</th>
+                <th style={s.th}>CLIENT</th>
+                <th style={s.th}>VESSEL</th>
+                <th style={s.th}>DO REF</th>
+                <th style={s.th}>STATUS</th>
+                <th style={{ ...s.th, textAlign: 'right' }}>RECEIVED (L)</th>
+                <th style={{ ...s.th, textAlign: 'right' }}>TRANSIT LOSS</th>
+                <th style={s.th}></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {pg.pageRows.map(b => {
+                const diffs = diffsForBAST(b);
+                return (
+                  <tr key={b.id}>
+                    <td style={{ ...s.td, fontFamily: T.font, color: T.amber, fontSize: 11 }}>
+                      {b.nomorBast}
+                      {diffs.length > 0 && <span title={`Differs from DO (${diffs.length} field(s))`} style={{ color: T.amber, marginLeft: 6 }}>⚠</span>}
+                    </td>
+                    <td style={s.td}>{b.tanggalBast}</td>
+                    <td style={s.td}>{clientOf(b)}</td>
+                    <td style={s.td}>{vesselOf(b)}</td>
+                    <td style={{ ...s.td, fontFamily: T.font, fontSize: 10 }}>{b.supplier?.deliveryOrder}</td>
+                    <td style={s.td}>
+                      <span style={{ fontSize: 10, color: b.status === 'blank' ? T.textDim : T.green }}>
+                        {b.status === 'blank' ? 'blank (pre-bunker)' : 'completed'}
+                      </span>
+                    </td>
+                    <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font }}>
+                      {b.status === 'blank' ? '—' : fmtL(b.qty?.literStandard)}
+                    </td>
+                    <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font, color: b.transitLossL > 0 ? T.red : T.text }}>
+                      {b.status === 'blank' ? '—' : fmtL(b.transitLossL)}
+                    </td>
+                    <td style={{ ...s.td, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      <button onClick={() => printBAST(b)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6 }}>PDF</button>
+                      <button onClick={() => startEdit(b)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6 }}>
+                        {b.status === 'blank' ? 'FILL' : 'EDIT'}
+                      </button>
+                      {diffs.length > 0 && (
+                        <button onClick={() => syncFromDO(b)} disabled={syncBusy[b.id]}
+                          style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6, color: T.amber, borderColor: T.amber }}>
+                          {syncBusy[b.id] ? 'SYNC…' : 'SYNC'}
+                        </button>
+                      )}
+                      <button onClick={() => del(b)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, color: T.red }}>DEL</button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <PaginationBar {...pg} />
+        </>
       )}
     </div>
   );

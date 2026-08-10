@@ -5,6 +5,7 @@ import { useCollection } from './useCollection';
 import { allocateNumber } from './counters';
 import VolumeInput from './VolumeInput';
 import { useFuelOpsMaster } from './useFuelOpsMaster';
+import { usePagination, PaginationBar, useIsNarrow, diffSOtoDO } from './listUtils';
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
@@ -21,12 +22,15 @@ const STATUS_COLORS = {
 
 export default function SalesRequests() {
   const sr       = useCollection(COL.salesRequests);
+  const doC      = useCollection(COL.deliveryOrders);
   const clientsC = useCollection(COL.clients);
   const nodesC   = useCollection(COL.nodes);
   const { fuelTypes, error: ftError } = useFuelOpsMaster();
 
   const [form, setForm]     = useState(null);
   const [editId, setEditId] = useState(null);
+
+  const narrow = useIsNarrow();
 
   const clients = clientsC.data;
   const nodes   = nodesC.data;
@@ -41,13 +45,36 @@ export default function SalesRequests() {
   const derivedBucket = scheme?.bucket;
   const derivedIssuer = scheme ? ISSUERS[scheme.issuer]?.name : '';
 
+  // Newest first (requestedDate desc, then soNumber desc as tiebreak).
+  const sortedRows = useMemo(() => {
+    return [...sr.data].sort((a, b) => {
+      const d = String(b.requestedDate || '').localeCompare(String(a.requestedDate || ''));
+      if (d !== 0) return d;
+      return String(b.soNumber || '').localeCompare(String(a.soNumber || ''));
+    });
+  }, [sr.data]);
+
+  // Map SO id -> stale DO discrepancy count (item 1: flag SOs whose DO is out of sync).
+  const staleBySO = useMemo(() => {
+    const m = {};
+    for (const d of doC.data) {
+      if (!d.salesRequestId) continue;
+      const so = sr.data.find(r => r.id === d.salesRequestId);
+      if (!so) continue;
+      const diffs = diffSOtoDO(so, d);
+      if (diffs.length) m[so.id] = (m[so.id] || 0) + diffs.length;
+    }
+    return m;
+  }, [doC.data, sr.data]);
+
+  const pg = usePagination(sortedRows, 20);
+
   const startNew  = () => { setForm({ ...BLANK }); setEditId(null); };
   const startEdit = (r) => { setForm({ ...BLANK, ...r }); setEditId(r.id); };
   const cancel    = () => { setForm(null); setEditId(null); };
 
   const sf = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
-  // when node changes, default the delivery location to the node's location (editable)
   const onNode = (nodeId) => {
     const node = nodes.find(n => n.id === nodeId);
     setForm(f => ({ ...f, nodeId,
@@ -61,7 +88,6 @@ export default function SalesRequests() {
     const ft = fuelTypes.find(f => f.id === form.fuelTypeId);
     const node = nodes.find(n => n.id === form.nodeId);
     let soNumber = form.soNumber;
-    // Allocate an atomic SO number only on first creation.
     if (!editId) {
       const d = new Date(form.requestedDate);
       const seq = await allocateNumber('so', d.getFullYear());
@@ -83,7 +109,7 @@ export default function SalesRequests() {
       nodeName: node?.name || '',
       nodeCode: node?.code || '',
       fuelTypeId: form.fuelTypeId,
-      fuelTypeName: ft?.name || '',
+      fuelTypeName: ft?.name || form.fuelTypeName || '',
       fuelTypeShort: ft?.shortName || '',
       requestedVolumeL: Number(form.requestedVolumeL) || 0,
       deliveryLocation: form.deliveryLocation.trim(),
@@ -102,9 +128,13 @@ export default function SalesRequests() {
 
   const fmtL = n => (Number(n) || 0).toLocaleString('id-ID');
 
+  const schemeLabel = r => `${r.scheme === 'PPS_SALE' ? 'PPS Sale' : 'Non-PPS'} · ${r.bucket}`;
+  const schemeColor = r => (r.scheme === 'PPS_SALE' ? T.green : T.blue);
+
   return (
-    <div style={{ padding: 40, maxWidth: 1000 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+    <div style={{ padding: narrow ? 16 : 40, maxWidth: 1000 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12,
+        flexWrap: 'wrap', marginBottom: 20 }}>
         <div>
           <div style={{ fontSize: 11, color: T.amber, letterSpacing: 1.5 }}>SALES ORDERS</div>
           <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>
@@ -120,8 +150,18 @@ export default function SalesRequests() {
             {editId ? `EDIT ${form.soNumber || 'SALES ORDER'}` : 'NEW SALES ORDER'}
           </div>
 
+          {editId && staleBySO[editId] > 0 && (
+            <div style={{
+              border: `1px solid ${T.amber}`, borderRadius: 4, padding: '10px 12px', marginBottom: 14,
+              fontSize: 11, color: T.text, background: T.amberGlow,
+            }}>
+              Saving this SO will not update its already-issued DO. After saving, open{' '}
+              <b>Delivery Orders</b> — the linked DO will show an "out of sync" banner where you can apply the changes.
+            </div>
+          )}
+
           {/* Client cascade */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: narrow ? '1fr' : '1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
             <div>
               <label style={s.label}>Client Group</label>
               <select style={s.input} value={form.clientId}
@@ -149,7 +189,7 @@ export default function SalesRequests() {
           </div>
 
           {/* Scheme + derived */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: narrow ? '1fr' : '1fr 1fr', gap: 12, marginBottom: 12 }}>
             <div>
               <label style={s.label}>Scheme</label>
               <select style={s.input} value={form.scheme} onChange={e => sf('scheme', e.target.value)}>
@@ -169,7 +209,7 @@ export default function SalesRequests() {
           </div>
 
           {/* Node + fuel + volume */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: narrow ? '1fr' : '1fr 1fr 1fr', gap: 12, marginBottom: 12 }}>
             <div>
               <label style={s.label}>Source Node</label>
               <select style={s.input} value={form.nodeId} onChange={e => onNode(e.target.value)}>
@@ -197,7 +237,7 @@ export default function SalesRequests() {
           </div>
 
           {/* Location + PO + date */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: narrow ? '1fr' : '1fr 1fr 1fr', gap: 12, marginBottom: 16 }}>
             <div>
               <label style={s.label}>Delivery Location</label>
               <input style={s.input} value={form.deliveryLocation}
@@ -227,51 +267,88 @@ export default function SalesRequests() {
         <div style={{ color: T.textDim, fontSize: 12 }}>Loading…</div>
       ) : sr.data.length === 0 ? (
         <div style={{ color: T.textFaint, fontSize: 12, padding: 20 }}>No sales orders yet.</div>
+      ) : narrow ? (
+        // -------- Mobile: stacked cards --------
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {pg.pageRows.map(r => (
+            <div key={r.id} style={{ ...s.card, padding: 14 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+                <span style={{ fontFamily: T.font, color: T.amber, fontSize: 11 }}>{r.soNumber || '—'}</span>
+                <span style={{ fontSize: 10, color: STATUS_COLORS[r.status] || T.textDim }}>{r.status}</span>
+              </div>
+              <div style={{ fontSize: 13, color: T.text }}>{r.clientName}</div>
+              <div style={{ fontSize: 11, color: T.textDim, marginBottom: 6 }}>{r.entityName}</div>
+              <div style={{ fontSize: 11, color: T.textDim, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                <span>{r.requestedDate}</span>
+                <span>· {r.vesselName || '—'}</span>
+                <span>· {r.fuelTypeShort || r.fuelTypeName || '—'}</span>
+                <span style={{ fontFamily: T.font }}>· {fmtL(r.requestedVolumeL)} L</span>
+              </div>
+              <div style={{ fontSize: 10, color: schemeColor(r), marginTop: 4 }}>{schemeLabel(r)}</div>
+              {staleBySO[r.id] > 0 && (
+                <div style={{ fontSize: 10, color: T.amber, marginTop: 6 }}>
+                  ⚠ Linked DO out of sync ({staleBySO[r.id]} field{staleBySO[r.id] > 1 ? 's' : ''})
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
+                <button onClick={() => startEdit(r)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10 }}>EDIT</button>
+                <button onClick={() => del(r)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10, color: T.red }}>DEL</button>
+              </div>
+            </div>
+          ))}
+          <PaginationBar {...pg} />
+        </div>
       ) : (
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead>
-            <tr>
-              <th style={s.th}>SO NUMBER</th>
-              <th style={s.th}>DATE</th>
-              <th style={s.th}>CLIENT / ENTITY</th>
-              <th style={s.th}>VESSEL</th>
-              <th style={s.th}>SCHEME</th>
-              <th style={s.th}>FUEL</th>
-              <th style={{ ...s.th, textAlign: 'right' }}>VOLUME (L)</th>
-              <th style={s.th}>STATUS</th>
-              <th style={s.th}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {sr.data.map(r => (
-              <tr key={r.id}>
-                <td style={{ ...s.td, fontFamily: T.font, color: T.amber, fontSize: 10 }}>{r.soNumber || '—'}</td>
-                <td style={s.td}>{r.requestedDate}</td>
-                <td style={s.td}>
-                  <div>{r.clientName}</div>
-                  <div style={{ fontSize: 10, color: T.textDim }}>{r.entityName}</div>
-                </td>
-                <td style={s.td}>{r.vesselName || '—'}</td>
-                <td style={s.td}>
-                  <span style={{ fontSize: 10, color: r.scheme === 'PPS_SALE' ? T.green : T.blue }}>
-                    {r.scheme === 'PPS_SALE' ? 'PPS Sale' : 'Non-PPS'} · {r.bucket}
-                  </span>
-                </td>
-                <td style={s.td}>{r.fuelTypeShort || r.fuelTypeName || '—'}</td>
-                <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font }}>{fmtL(r.requestedVolumeL)}</td>
-                <td style={s.td}>
-                  <span style={{ fontSize: 10, color: STATUS_COLORS[r.status] || T.textDim }}>
-                    {r.status}
-                  </span>
-                </td>
-                <td style={{ ...s.td, textAlign: 'right' }}>
-                  <button onClick={() => startEdit(r)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6 }}>EDIT</button>
-                  <button onClick={() => del(r)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, color: T.red }}>DEL</button>
-                </td>
+        // -------- Desktop: table --------
+        <>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                <th style={s.th}>SO NUMBER</th>
+                <th style={s.th}>DATE</th>
+                <th style={s.th}>CLIENT / ENTITY</th>
+                <th style={s.th}>VESSEL</th>
+                <th style={s.th}>SCHEME</th>
+                <th style={s.th}>FUEL</th>
+                <th style={{ ...s.th, textAlign: 'right' }}>VOLUME (L)</th>
+                <th style={s.th}>STATUS</th>
+                <th style={s.th}></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {pg.pageRows.map(r => (
+                <tr key={r.id}>
+                  <td style={{ ...s.td, fontFamily: T.font, color: T.amber, fontSize: 10 }}>
+                    {r.soNumber || '—'}
+                    {staleBySO[r.id] > 0 && (
+                      <span title={`Linked DO out of sync (${staleBySO[r.id]} field(s))`}
+                        style={{ color: T.amber, marginLeft: 6 }}>⚠</span>
+                    )}
+                  </td>
+                  <td style={s.td}>{r.requestedDate}</td>
+                  <td style={s.td}>
+                    <div>{r.clientName}</div>
+                    <div style={{ fontSize: 10, color: T.textDim }}>{r.entityName}</div>
+                  </td>
+                  <td style={s.td}>{r.vesselName || '—'}</td>
+                  <td style={s.td}>
+                    <span style={{ fontSize: 10, color: schemeColor(r) }}>{schemeLabel(r)}</span>
+                  </td>
+                  <td style={s.td}>{r.fuelTypeShort || r.fuelTypeName || '—'}</td>
+                  <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font }}>{fmtL(r.requestedVolumeL)}</td>
+                  <td style={s.td}>
+                    <span style={{ fontSize: 10, color: STATUS_COLORS[r.status] || T.textDim }}>{r.status}</span>
+                  </td>
+                  <td style={{ ...s.td, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    <button onClick={() => startEdit(r)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6 }}>EDIT</button>
+                    <button onClick={() => del(r)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, color: T.red }}>DEL</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <PaginationBar {...pg} />
+        </>
       )}
 
       {ftError && (
