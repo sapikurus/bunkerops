@@ -1,9 +1,22 @@
 import { useState, useEffect, useMemo } from 'react';
 import { T, s } from '../tokens';
-import { COL, BUCKETS, TOLERANCE_PCT } from '../config';
+import { COL, BUCKETS, TOLERANCE_PCT, ISSUERS, NODES, ROMAN, formatSppNumber } from '../config';
 import { useCollection } from './useCollection';
 import { canManage } from '../roles';
+import { allocateNumber } from './counters';
+import { useFuelOpsMaster } from './useFuelOpsMaster';
 import VolumeInput from './VolumeInput';
+import { buildCargoDOHtml } from './cargoDoGen';
+import { PPS_LOGO } from './assets';
+
+// Open an HTML string in a new window and trigger print (matches DO/BAST flow).
+function openPrint(html) {
+  const w = window.open('', '_blank');
+  if (!w) { alert('Pop-up blocked — allow pop-ups to print.'); return; }
+  w.document.write(html);
+  w.document.close();
+  setTimeout(() => w.print(), 400);
+}
 
 // Indonesian month labels for periodLabel ('Juli 2026').
 const MONTHS_ID = ['Januari','Februari','Maret','April','Mei','Juni','Juli',
@@ -41,6 +54,7 @@ export default function StockCards({ role, user }) {
   const cardsC = useCollection(COL.stockCards);
   const nodesC = useCollection(COL.nodes);
   const doC    = useCollection(COL.deliveryOrders);
+  const { fuelTypes, error: ftError } = useFuelOpsMaster();
 
   const now = new Date();
   const [sel, setSel] = useState({
@@ -116,12 +130,106 @@ export default function StockCards({ role, user }) {
   // ---- Incoming (manual) ---------------------------------------------------
   // TODO: later this links to a FuelOps incoming-cargo feed. Manual entry for now.
   const addIncoming = () => patch({
-    incoming: [...draft.incoming, { id: uid(), date: todayISO(), cargoRef: '', volumeL: '', vhsRatePerL: '', notes: '' }],
+    incoming: [...draft.incoming, {
+      id: uid(), date: todayISO(), cargoRef: '', volumeL: '', vhsRatePerL: '', notes: '',
+      // Optional permit-DO fields (for the port-authority bunker permit printout).
+      permit: null,
+    }],
   });
   const setIncoming = (id, field, v) => patch({
     incoming: draft.incoming.map(r => r.id === id ? { ...r, [field]: v } : r),
   });
   const delIncoming = (id) => patch({ incoming: draft.incoming.filter(r => r.id !== id) });
+
+  // ---- Permit DO / SPP (incoming-cargo → port-authority bunker permit) ------
+  // Which incoming row currently has its permit editor open (id or null).
+  const [permitOpen, setPermitOpen] = useState(null);
+  const [permitBusy, setPermitBusy] = useState({}); // per-row spinner during SPP allocation
+
+  // Seed a permit object from the row when first opened. portDestination
+  // defaults to the selected node's name; quantity to the row's incoming volume.
+  const openPermit = (r) => {
+    if (!r.permit) {
+      setIncoming(r.id, 'permit', {
+        sppNo: '',                 // auto-allocated on first print
+        referenceNo: '',           // user-typed PO / cargo ref
+        estDeliveryDate: r.date || todayISO(),
+        quantityL: r.volumeL || '',
+        fuelTypeId: '',
+        product: '',               // fuel type name (from dropdown / manual)
+        portLoading: '',
+        portDestination: node?.name || '',
+        supplyVessel: '',
+        recipientName: '',
+        note: '',
+      });
+    }
+    setPermitOpen(permitOpen === r.id ? null : r.id);
+  };
+
+  const setPermitField = (rowId, field, v) => {
+    setDraft(d => ({
+      ...d,
+      incoming: d.incoming.map(r =>
+        r.id === rowId ? { ...r, permit: { ...(r.permit || {}), [field]: v } } : r),
+    }));
+    setDirty(true);
+  };
+
+  // Selecting a fuel type stores both the id and its display name (product).
+  const setPermitFuel = (rowId, fuelId) => {
+    const ft = fuelTypes.find(f => f.id === fuelId);
+    setDraft(d => ({
+      ...d,
+      incoming: d.incoming.map(r =>
+        r.id === rowId
+          ? { ...r, permit: { ...(r.permit || {}), fuelTypeId: fuelId, product: ft?.name || '' } }
+          : r),
+    }));
+    setDirty(true);
+  };
+
+  const printPermit = async (r) => {
+    if (permitBusy[r.id]) return;
+    let p = r.permit || {};
+
+    // Allocate the SPP number once, on first print, then reuse it forever.
+    let sppNo = p.sppNo;
+    if (!sppNo) {
+      setPermitBusy(m => ({ ...m, [r.id]: true }));
+      try {
+        const d = new Date(p.estDeliveryDate || r.date || todayISO());
+        const seq = await allocateNumber('spp', d.getFullYear());
+        const issuerCode = ISSUERS.PPS.code; // issued under PPS (cargo owner)
+        const nodeCode = node?.code || NODES.OB_GALLEY.code;
+        sppNo = formatSppNumber({ seq, issuerCode, nodeCode, monthIndex: d.getMonth(), year: d.getFullYear() });
+        // Persist onto the permit so reprints keep the same number.
+        setPermitField(r.id, 'sppNo', sppNo);
+        p = { ...p, sppNo };
+      } catch (e) {
+        setPermitBusy(m => ({ ...m, [r.id]: false }));
+        alert('Could not allocate SPP number: ' + e.message);
+        return;
+      }
+      setPermitBusy(m => ({ ...m, [r.id]: false }));
+    }
+
+    const html = buildCargoDOHtml({
+      issuerLogo: PPS_LOGO,
+      sppNo,
+      printDate: todayISO(),
+      estDeliveryDate: p.estDeliveryDate || r.date || '',
+      quantityL: p.quantityL || r.volumeL || 0,
+      product: p.product || '',
+      portLoading: p.portLoading || '',
+      portDestination: p.portDestination || node?.name || '',
+      supplyVessel: p.supplyVessel || '',
+      referenceNo: p.referenceNo || '',
+      recipientName: p.recipientName || '',
+      note: p.note || '',
+    });
+    openPrint(html);
+  };
 
   // ---- Dispatched (pulled from Delivery Orders) ----------------------------
   const syncDispatched = () => {
@@ -157,6 +265,9 @@ export default function StockCards({ role, user }) {
     incoming: draft.incoming.map(r => ({
       id: r.id, date: r.date, cargoRef: r.cargoRef,
       volumeL: Number(r.volumeL) || 0, vhsRatePerL: Number(r.vhsRatePerL) || 0, notes: r.notes,
+      // Persist permit-DO fields when present, so the document can be reprinted.
+      // (useCollection strips undefined; null is fine for "never set".)
+      permit: r.permit || null,
     })),
     dispatched: draft.dispatched,
     measuredROB: (draft.measuredROB === '' || draft.measuredROB == null) ? null : Number(draft.measuredROB),
@@ -331,7 +442,7 @@ export default function StockCards({ role, user }) {
                     <th style={{ ...s.th, textAlign: 'right' }}>VHS RATE /L</th>
                     <th style={{ ...s.th, textAlign: 'right' }}>VHS FEE</th>
                     <th style={s.th}>NOTES</th>
-                    {editable && <th style={s.th}></th>}
+                    <th style={s.th}></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -368,13 +479,106 @@ export default function StockCards({ role, user }) {
                               onChange={e => setIncoming(r.id, 'notes', e.target.value)} />
                           : r.notes}
                       </td>
-                      {editable && (
-                        <td style={{ ...s.td, textAlign: 'right' }}>
+                      <td style={{ ...s.td, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                        <button onClick={() => openPermit(r)}
+                          title="Print a Delivery Order for the port-authority bunker permit"
+                          style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6,
+                            color: r.permit ? T.amber : T.text, borderColor: r.permit ? T.amber : T.border }}>
+                          PERMIT DO
+                        </button>
+                        {editable && (
                           <button onClick={() => delIncoming(r.id)}
                             style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, color: T.red }}>DEL</button>
-                        </td>
-                      )}
+                        )}
+                      </td>
                     </tr>
+                  ))}
+                  {/* Permit-DO editor row — spans the whole table, shown when open */}
+                  {draft.incoming.map(r => (
+                    permitOpen === r.id ? (
+                      <tr key={r.id + '_permit'}>
+                        <td colSpan={7} style={{ padding: 0, borderBottom: `1px solid ${T.border}` }}>
+                          <div style={{ background: T.amberGlow, padding: 14, borderTop: `2px solid ${T.amber}` }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                              <div style={{ fontSize: 10, color: T.amber, letterSpacing: 1.5 }}>
+                                SPP — SURAT PENGANTAR PENGIRIMAN · for port-authority bunker permit
+                                {r.permit?.sppNo && (
+                                  <span style={{ color: T.text, fontFamily: T.font, marginLeft: 8 }}>{r.permit.sppNo}</span>
+                                )}
+                              </div>
+                              <button onClick={() => setPermitOpen(null)}
+                                style={{ ...s.btn('ghost'), padding: '2px 10px', fontSize: 10 }}>CLOSE</button>
+                            </div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+                              <Field label="Est. Delivery Date">
+                                <input style={s.input} type="date" value={r.permit?.estDeliveryDate || ''} disabled={!editable}
+                                  onChange={e => setPermitField(r.id, 'estDeliveryDate', e.target.value)} />
+                              </Field>
+                              <Field label="Cargo Item / Fuel Type">
+                                {ftError ? (
+                                  <input style={s.input} value={r.permit?.product || ''} disabled={!editable}
+                                    onChange={e => setPermitField(r.id, 'product', e.target.value)}
+                                    placeholder="type fuel (FuelOps unavailable)" />
+                                ) : (
+                                  <select style={s.input} value={r.permit?.fuelTypeId || ''} disabled={!editable}
+                                    onChange={e => setPermitFuel(r.id, e.target.value)}>
+                                    <option value="">— select fuel —</option>
+                                    {fuelTypes.map(ft => <option key={ft.id} value={ft.id}>{ft.name}</option>)}
+                                  </select>
+                                )}
+                              </Field>
+                              <Field label="Quantity (L)">
+                                <VolumeInput value={r.permit?.quantityL ?? ''} disabled={!editable}
+                                  onChange={v => setPermitField(r.id, 'quantityL', v)} placeholder="200.000" />
+                              </Field>
+                              <Field label="Port Loading">
+                                <input style={s.input} value={r.permit?.portLoading || ''} disabled={!editable}
+                                  onChange={e => setPermitField(r.id, 'portLoading', e.target.value)}
+                                  placeholder="load port" />
+                              </Field>
+                              <Field label="Port Destination">
+                                <select style={s.input} value={r.permit?.portDestination || ''} disabled={!editable}
+                                  onChange={e => setPermitField(r.id, 'portDestination', e.target.value)}>
+                                  <option value="">— select node —</option>
+                                  {nodesC.data.map(n => <option key={n.id} value={n.name}>{n.name}</option>)}
+                                </select>
+                              </Field>
+                              <Field label="Supply Vessel">
+                                <input style={s.input} value={r.permit?.supplyVessel || ''} disabled={!editable}
+                                  onChange={e => setPermitField(r.id, 'supplyVessel', e.target.value)}
+                                  placeholder="e.g. SPOB Berkat Anugerah 06" />
+                              </Field>
+                              <Field label="Reference Number (PO / cargo ref)">
+                                <input style={s.input} value={r.permit?.referenceNo || ''} disabled={!editable}
+                                  onChange={e => setPermitField(r.id, 'referenceNo', e.target.value)}
+                                  placeholder="PO number" />
+                              </Field>
+                              <Field label="Recipient Name">
+                                <input style={s.input} value={r.permit?.recipientName || ''} disabled={!editable}
+                                  onChange={e => setPermitField(r.id, 'recipientName', e.target.value)}
+                                  placeholder="signer name" />
+                              </Field>
+                              <Field label="Note (optional)">
+                                <input style={s.input} value={r.permit?.note || ''} disabled={!editable}
+                                  onChange={e => setPermitField(r.id, 'note', e.target.value)} />
+                              </Field>
+                            </div>
+                            <div style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'center' }}>
+                              <button onClick={() => printPermit(r)} disabled={permitBusy[r.id]}
+                                style={{ ...s.btn('primary'), padding: '6px 16px', fontSize: 10 }}>
+                                {permitBusy[r.id] ? 'ALLOCATING SPP…' : (r.permit?.sppNo ? 'REPRINT SPP' : 'PRINT SPP')}
+                              </button>
+                              <span style={{ fontSize: 9, color: T.textFaint }}>
+                                Issued under PPS. {r.permit?.sppNo
+                                  ? 'SPP number already assigned — reprints keep it.'
+                                  : 'SPP number is allocated on first print.'}
+                                {!editable && ' View-only — reprints existing values.'}
+                              </span>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : null
                   ))}
                 </tbody>
               </table>

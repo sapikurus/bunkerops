@@ -69,3 +69,11 @@ export function formatSoNumber({ seq, issuerCode, nodeCode, monthIndex, year }) 
   const s = String(seq).padStart(4, '0');
   return `SO-${s}/${issuerCode}/${nodeCode}/${ROMAN[monthIndex]}/${String(year).slice(-2)}`;
 }
+
+// Build an SPP number (Surat Pengantar Pengiriman) for incoming-cargo permit DOs:
+// SPP-{seq:0001}/{issuerCode}/{nodeCode}/{romanMonth}/{yy}
+// Its own yearly counter ('spp'), separate from the sales DO sequence.
+export function formatSppNumber({ seq, issuerCode, nodeCode, monthIndex, year }) {
+  const s = String(seq).padStart(4, '0');
+  return `SPP-${s}/${issuerCode}/${nodeCode}/${ROMAN[monthIndex]}/${String(year).slice(-2)}`;
+}
