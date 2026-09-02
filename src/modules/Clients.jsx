@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { T, s } from '../tokens';
 import { COL } from '../config';
 import { useCollection } from './useCollection';
+import { useIsNarrow } from './listUtils';
 
 // Client document shape:
 // { id, groupName, poIssuer, entities: [ { id, name, vessels: [ {id, name} ] } ], active }
@@ -12,6 +13,7 @@ export default function Clients({ embedded } = {}) {
   const { data: clients, loading, add, update, remove } = useCollection(COL.clients);
   const [form, setForm]     = useState(null);
   const [editId, setEditId] = useState(null);
+  const narrow = useIsNarrow();
 
   const BLANK = { groupName: '', poIssuer: '', entities: [], active: true };
 
@@ -73,8 +75,9 @@ export default function Clients({ embedded } = {}) {
   };
 
   return (
-    <div style={{ padding: embedded ? 0 : 40, maxWidth: 900 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+    <div style={{ padding: embedded ? 0 : (narrow ? 16 : 40), maxWidth: 900 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: narrow ? 'stretch' : 'center',
+        flexDirection: narrow ? 'column' : 'row', gap: 12, marginBottom: 20 }}>
         <div>
           <div style={{ fontSize: 11, color: T.amber, letterSpacing: 1.5 }}>CLIENTS</div>
           <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>
@@ -90,7 +93,7 @@ export default function Clients({ embedded } = {}) {
           <div style={{ fontSize: 11, color: T.amber, letterSpacing: 1, marginBottom: 14 }}>
             {editId ? 'EDIT CLIENT GROUP' : 'NEW CLIENT GROUP'}
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: narrow ? '1fr' : '1fr 1fr', gap: 12, marginBottom: 16 }}>
             <div>
               <label style={s.label}>Group Name</label>
               <input style={s.input} value={form.groupName} onChange={e => sf('groupName', e.target.value)}

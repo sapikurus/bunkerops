@@ -8,6 +8,7 @@ import { canAccess, canManage } from '../roles';
 import Nodes from './Nodes';
 import Clients from './Clients';
 import UsersRoles from './UsersRoles';
+import { useIsNarrow } from './listUtils';
 
 const currentYear = new Date().getFullYear();
 
@@ -93,20 +94,22 @@ export default function Settings({ role }) {
 
   const [tab, setTab] = useState(TABS[0]?.key || 'general');
   const [masterView, setMasterView] = useState('nodes'); // nodes | clients
+  const narrow = useIsNarrow();
 
   if (TABS.length === 0) {
     return <div style={{ padding: 40, color: T.textDim, fontSize: 13 }}>No settings available for your role.</div>;
   }
 
   return (
-    <div style={{ padding: 40, maxWidth: 1000 }}>
+    <div style={{ padding: narrow ? 16 : 40, maxWidth: 1000 }}>
       <div style={{ fontSize: 11, color: T.amber, letterSpacing: 1.5, marginBottom: 16 }}>SETTINGS</div>
 
-      {/* Sub-tab bar */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 24, borderBottom: `1px solid ${T.border}` }}>
+      {/* Sub-tab bar — horizontally scrollable on mobile so tabs never overflow */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 24, borderBottom: `1px solid ${T.border}`,
+        overflowX: 'auto', whiteSpace: 'nowrap' }}>
         {TABS.map(t => (
           <div key={t.key} onClick={() => setTab(t.key)}
-            style={{ padding: '8px 16px', cursor: 'pointer', fontSize: 12,
+            style={{ padding: '8px 16px', cursor: 'pointer', fontSize: 12, flexShrink: 0,
               color: tab === t.key ? T.amber : T.textDim,
               borderBottom: tab === t.key ? `2px solid ${T.amber}` : '2px solid transparent',
               marginBottom: -1 }}>
