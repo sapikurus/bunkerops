@@ -179,3 +179,84 @@ export function bastPatchFromDO(d, cargoOwner) {
   };
   return patch;
 }
+
+// ---------------------------------------------------------------------------
+// useSort — generic client-side sort over rows by a keyed accessor map.
+// `columns` is { key: (row) => comparableValue }. Returns the sorted rows plus
+// the active key/dir and a toggle handler for header clicks. Passing the same
+// key flips direction; a new key sorts ascending (except date-like defaults).
+// `initial` sets the starting sort, e.g. { key: 'date', dir: 'desc' }.
+// ---------------------------------------------------------------------------
+export function useSort(rows, columns, initial = {}) {
+  const [sortKey, setSortKey] = useState(initial.key || null);
+  const [sortDir, setSortDir] = useState(initial.dir || 'asc');
+
+  const toggle = (key) => {
+    if (key === sortKey) {
+      setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      setSortDir('asc');
+    }
+  };
+
+  const sorted = useMemo(() => {
+    if (!sortKey || !columns[sortKey]) return rows;
+    const get = columns[sortKey];
+    const dir = sortDir === 'asc' ? 1 : -1;
+    return [...rows].sort((a, b) => {
+      const av = get(a), bv = get(b);
+      // numbers compare numerically; everything else as string (locale).
+      if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir;
+      return String(av ?? '').localeCompare(String(bv ?? '')) * dir;
+    });
+  }, [rows, sortKey, sortDir, columns]);
+
+  return { sorted, sortKey, sortDir, toggle };
+}
+
+// ---------------------------------------------------------------------------
+// SortHeader — a clickable <th> showing the active sort arrow. Pass the same
+// sortKey/sortDir/onSort the useSort hook returns. `align` optional ('right').
+// ---------------------------------------------------------------------------
+export function SortHeader({ label, colKey, sortKey, sortDir, onSort, align }) {
+  const active = sortKey === colKey;
+  const arrow = active ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '';
+  return (
+    <th
+      onClick={() => onSort(colKey)}
+      style={{ ...s.th, textAlign: align || 'left', cursor: 'pointer', userSelect: 'none',
+        color: active ? T.amber : s.th.color, whiteSpace: 'nowrap' }}
+      title="Click to sort"
+    >
+      {label}<span style={{ fontSize: 8 }}>{arrow}</span>
+    </th>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// StatusPill — soft-tinted rounded badge. `color` is a CSS color (token or hex);
+// the background is that color at low opacity so text stays readable in both
+// themes. `label` defaults to the raw status with underscores → spaces.
+// ---------------------------------------------------------------------------
+export function StatusPill({ status, color, label }) {
+  const c = color || T.textDim;
+  const text = label != null ? label : String(status || '').replace(/_/g, ' ');
+  return (
+    <span style={{
+      display: 'inline-block',
+      fontSize: 10,
+      fontWeight: 700,
+      letterSpacing: 0.5,
+      color: c,
+      background: `color-mix(in srgb, ${c} 16%, transparent)`,
+      border: `1px solid color-mix(in srgb, ${c} 35%, transparent)`,
+      borderRadius: 999,
+      padding: '2px 9px',
+      textTransform: 'uppercase',
+      whiteSpace: 'nowrap',
+    }}>
+      {text}
+    </span>
+  );
+}

@@ -6,7 +6,13 @@ import { buildBASTHtml } from './bastGen';
 import VolumeInput from './VolumeInput';
 import { USI_LOGO } from './assets';
 import { makeQR } from './qr';
-import { usePagination, PaginationBar, useIsNarrow, diffDOtoBAST } from './listUtils';
+import { usePagination, PaginationBar, useIsNarrow, diffDOtoBAST, useSort, SortHeader, StatusPill } from './listUtils';
+
+// BAST status → pill color/label. Completed BASTs are the only ones in the
+// bottom list; blank ones live in the strip above.
+const bastPill = (b) => b.status === 'blank'
+  ? { color: 'var(--text-dim)', label: 'blank (pre-bunker)' }
+  : { color: 'var(--green)', label: 'completed' };
 
 // Roles permitted to reopen a completed BAST (and, elsewhere, approve). Defined
 // locally so this module doesn't depend on an isApprover export existing in
@@ -56,7 +62,7 @@ export default function BASTModule({ role }) {
 
   // Bottom list is COMPLETED (filled) BASTs only — newest first, seq desc tiebreak.
   // Blank ones live only in the strip above, so the two sections never overlap.
-  const sortedBASTs = useMemo(() => {
+  const completedBASTs = useMemo(() => {
     return bastC.data
       .filter(b => b.status !== 'blank')
       .sort((a, b) => {
@@ -65,6 +71,18 @@ export default function BASTModule({ role }) {
         return bastSeq(b) - bastSeq(a);
       });
   }, [bastC.data]);
+
+  // Sortable columns for the completed list.
+  const sortCols = useMemo(() => ({
+    nomorBast: b => bastSeq(b),
+    date:      b => b.tanggalBast || '',
+    client:    b => b.recipient?.entityName || '',
+    vessel:    b => b.recipient?.vesselName || '',
+    doRef:     b => b.supplier?.deliveryOrder || '',
+    received:  b => Number(b.qty?.literStandard) || 0,
+    loss:      b => Number(b.transitLossL) || 0,
+  }), []);
+  const { sorted: sortedBASTs, sortKey, sortDir, toggle } = useSort(completedBASTs, sortCols);
 
   const pg      = usePagination(sortedBASTs, 20);  // completed list pager
   const blankPg = usePagination(blankBASTs, 20);   // independent blank-strip pager
@@ -440,11 +458,9 @@ export default function BASTModule({ role }) {
             const diffs = diffsForBAST(b);
             return (
               <div key={b.id} style={{ ...s.card, padding: 14 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 6 }}>
                   <span style={{ fontFamily: T.font, color: T.amber, fontSize: 11 }}>{b.nomorBast}</span>
-                  <span style={{ fontSize: 10, color: b.status === 'blank' ? T.textDim : T.green }}>
-                    {b.status === 'blank' ? 'blank (pre-bunker)' : 'completed'}
-                  </span>
+                  <StatusPill {...bastPill(b)} />
                 </div>
                 <div style={{ fontSize: 13, color: T.text }}>{clientOf(b)}</div>
                 <div style={{ fontSize: 11, color: T.textDim, display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
@@ -490,14 +506,14 @@ export default function BASTModule({ role }) {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr>
-                <th style={s.th}>BAST NUMBER</th>
-                <th style={s.th}>DATE</th>
-                <th style={s.th}>CLIENT</th>
-                <th style={s.th}>VESSEL</th>
-                <th style={s.th}>DO REF</th>
+                <SortHeader label="BAST NUMBER" colKey="nomorBast" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <SortHeader label="DATE" colKey="date" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <SortHeader label="CLIENT" colKey="client" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <SortHeader label="VESSEL" colKey="vessel" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <SortHeader label="DO REF" colKey="doRef" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
                 <th style={s.th}>STATUS</th>
-                <th style={{ ...s.th, textAlign: 'right' }}>RECEIVED (L)</th>
-                <th style={{ ...s.th, textAlign: 'right' }}>TRANSIT LOSS</th>
+                <SortHeader label="RECEIVED (L)" colKey="received" sortKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
+                <SortHeader label="TRANSIT LOSS" colKey="loss" sortKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
                 <th style={s.th}></th>
               </tr>
             </thead>
@@ -515,9 +531,7 @@ export default function BASTModule({ role }) {
                     <td style={s.td}>{vesselOf(b)}</td>
                     <td style={{ ...s.td, fontFamily: T.font, fontSize: 10 }}>{b.supplier?.deliveryOrder}</td>
                     <td style={s.td}>
-                      <span style={{ fontSize: 10, color: b.status === 'blank' ? T.textDim : T.green }}>
-                        {b.status === 'blank' ? 'blank (pre-bunker)' : 'completed'}
-                      </span>
+                      <StatusPill {...bastPill(b)} />
                     </td>
                     <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font }}>
                       {b.status === 'blank' ? '—' : fmtL(b.qty?.literStandard)}

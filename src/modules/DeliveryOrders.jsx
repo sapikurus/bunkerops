@@ -7,7 +7,12 @@ import { buildDOHtml } from './doGen';
 import VolumeInput from './VolumeInput';
 import { USI_LOGO, PPS_LOGO } from './assets';
 import { makeQR } from './qr';
-import { usePagination, PaginationBar, useIsNarrow, diffSOtoDO, diffDOtoBAST } from './listUtils';
+import { usePagination, PaginationBar, useIsNarrow, diffSOtoDO, diffDOtoBAST, useSort, SortHeader, StatusPill } from './listUtils';
+
+const DO_STATUS_COLORS = {
+  issued: T.blue, delivered: '#a855f7', cancelled: T.red,
+};
+const doStatusColor = st => DO_STATUS_COLORS[st] || T.textDim;
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const romanMonth = (d) => new Date(d).getMonth();
@@ -41,14 +46,40 @@ export default function DeliveryOrders() {
 
   const openRequests = srC.data.filter(r => r.status === 'requested');
 
-  // Newest first (brDate desc, brNo desc tiebreak).
-  const sortedDOs = useMemo(() => {
+  // Look up a DO's parent SO (for the SO REF column: number + issuance date).
+  const soById = useMemo(() => {
+    const m = {};
+    for (const r of srC.data) m[r.id] = r;
+    return m;
+  }, [srC.data]);
+  const soOf   = d => soById[d.salesRequestId];
+  const soDate = d => soOf(d)?.requestedDate || '';
+
+  // Sortable columns.
+  const sortCols = useMemo(() => ({
+    brNo:       d => d.brNo || '',
+    date:       d => d.brDate || '',
+    soRef:      d => soDate(d) || (soOf(d)?.soNumber || ''),
+    deliverTo:  d => d.deliverTo || '',
+    vessel:     d => d.vesselName || '',
+    dispatched: d => Number(d.dispatchedVolumeL) || 0,
+    status:     d => d.status || '',
+  }), [soById]);
+
+  // Default newest first; cancelled DOs sink to the bottom.
+  const baseDOs = useMemo(() => {
     return [...doC.data].sort((a, b) => {
       const d = String(b.brDate || '').localeCompare(String(a.brDate || ''));
       if (d !== 0) return d;
       return String(b.brNo || '').localeCompare(String(a.brNo || ''));
     });
   }, [doC.data]);
+
+  const { sorted: userSorted, sortKey, sortDir, toggle } = useSort(baseDOs, sortCols);
+  const sortedDOs = useMemo(() => {
+    return [...userSorted].sort((a, b) =>
+      (a.status === 'cancelled' ? 1 : 0) - (b.status === 'cancelled' ? 1 : 0));
+  }, [userSorted]);
 
   const pg = usePagination(sortedDOs, 20);
 
@@ -265,9 +296,12 @@ export default function DeliveryOrders() {
   };
 
   const del = async (d) => {
-    if (!confirm(`Delete DO ${d.brNo}? The sales request will revert to 'requested'.`)) return;
+    const willRevert = d.status !== 'cancelled';
+    if (!confirm(`Delete DO ${d.brNo}?` + (willRevert ? ` The sales request will revert to 'requested'.` : ''))) return;
     await doC.remove(d.id);
-    if (d.salesRequestId) await srC.update(d.salesRequestId, { status: 'requested' });
+    // Only revert the SO if this DO wasn't cancelled (a cancelled DO's SO is
+    // itself cancelled — don't resurrect it to 'requested').
+    if (d.salesRequestId && willRevert) await srC.update(d.salesRequestId, { status: 'requested' });
   };
 
   const fmtL = n => (Number(n) || 0).toLocaleString('id-ID');
@@ -444,9 +478,9 @@ export default function DeliveryOrders() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {pg.pageRows.map(d => (
             <div key={d.id} style={{ ...s.card, padding: 14 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 6 }}>
                 <span style={{ fontFamily: T.font, color: T.amber, fontSize: 11 }}>{d.brNo}</span>
-                <span style={{ fontSize: 10, color: T.textDim }}>{d.status}</span>
+                <StatusPill status={d.status} color={doStatusColor(d.status)} />
               </div>
               <div style={{ fontSize: 13, color: T.text }}>{d.deliverTo}</div>
               <div style={{ fontSize: 11, color: T.textDim, display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
@@ -454,10 +488,15 @@ export default function DeliveryOrders() {
                 <span>· {d.vesselName || '—'}</span>
                 <span style={{ fontFamily: T.font }}>· {fmtL(d.dispatchedVolumeL)} L</span>
               </div>
-              <SyncBanner d={d} />
+              <div style={{ fontSize: 10, color: T.textFaint, marginTop: 4 }}>
+                SO {soOf(d)?.soNumber || '—'} · {soDate(d) || '—'}
+              </div>
+              {d.status !== 'cancelled' && <SyncBanner d={d} />}
               <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
                 <button onClick={() => printDO(d)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10 }}>PDF</button>
-                <button onClick={() => startEdit(d)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10 }}>EDIT</button>
+                {d.status !== 'cancelled' && (
+                  <button onClick={() => startEdit(d)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10 }}>EDIT</button>
+                )}
                 <button onClick={() => del(d)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10, color: T.red }}>DEL</button>
               </div>
             </div>
@@ -470,12 +509,13 @@ export default function DeliveryOrders() {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr>
-                <th style={s.th}>DO NUMBER</th>
-                <th style={s.th}>DATE</th>
-                <th style={s.th}>DELIVER TO</th>
-                <th style={s.th}>VESSEL</th>
-                <th style={{ ...s.th, textAlign: 'right' }}>DISPATCHED (L)</th>
-                <th style={s.th}>STATUS</th>
+                <SortHeader label="DO NUMBER" colKey="brNo" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <SortHeader label="DATE" colKey="date" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <SortHeader label="SO REF" colKey="soRef" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <SortHeader label="DELIVER TO" colKey="deliverTo" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <SortHeader label="VESSEL" colKey="vessel" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <SortHeader label="DISPATCHED (L)" colKey="dispatched" sortKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
+                <SortHeader label="STATUS" colKey="status" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
                 <th style={s.th}></th>
               </tr>
             </thead>
@@ -490,19 +530,25 @@ export default function DeliveryOrders() {
                         {diffs.length > 0 && <span title="Out of sync with SO" style={{ color: T.amber, marginLeft: 6 }}>⚠</span>}
                       </td>
                       <td style={s.td}>{d.brDate}</td>
+                      <td style={{ ...s.td, fontSize: 10 }}>
+                        <div style={{ fontFamily: T.font, color: T.textDim }}>{soOf(d)?.soNumber || '—'}</div>
+                        <div style={{ color: T.textFaint }}>{soDate(d) || '—'}</div>
+                      </td>
                       <td style={s.td}>{d.deliverTo}</td>
                       <td style={s.td}>{d.vesselName}</td>
                       <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font }}>{fmtL(d.dispatchedVolumeL)}</td>
-                      <td style={s.td}><span style={{ fontSize: 10, color: T.textDim }}>{d.status}</span></td>
+                      <td style={s.td}><StatusPill status={d.status} color={doStatusColor(d.status)} /></td>
                       <td style={{ ...s.td, textAlign: 'right', whiteSpace: 'nowrap' }}>
                         <button onClick={() => printDO(d)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6 }}>PDF</button>
-                        <button onClick={() => startEdit(d)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6 }}>EDIT</button>
+                        {d.status !== 'cancelled' && (
+                          <button onClick={() => startEdit(d)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6 }}>EDIT</button>
+                        )}
                         <button onClick={() => del(d)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, color: T.red }}>DEL</button>
                       </td>
                     </tr>
-                    {diffs.length > 0 && (
+                    {diffs.length > 0 && d.status !== 'cancelled' && (
                       <tr>
-                        <td colSpan={7} style={{ padding: '0 12px 10px', borderBottom: `1px solid ${T.border}` }}>
+                        <td colSpan={8} style={{ padding: '0 12px 10px', borderBottom: `1px solid ${T.border}` }}>
                           <SyncBanner d={d} />
                         </td>
                       </tr>

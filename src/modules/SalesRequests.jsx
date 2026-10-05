@@ -5,7 +5,7 @@ import { useCollection } from './useCollection';
 import { allocateNumber } from './counters';
 import VolumeInput from './VolumeInput';
 import { useFuelOpsMaster } from './useFuelOpsMaster';
-import { usePagination, PaginationBar, useIsNarrow, diffSOtoDO } from './listUtils';
+import { usePagination, PaginationBar, useIsNarrow, diffSOtoDO, useSort, SortHeader, StatusPill } from './listUtils';
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
@@ -17,12 +17,17 @@ const BLANK = {
 };
 
 const STATUS_COLORS = {
-  requested: T.blue, do_issued: T.amber, bast_done: '#a855f7', reconciled: T.green,
+  pending_approval: '#f59e0b', requested: T.blue, do_issued: T.amber,
+  bast_done: '#a855f7', reconciled: T.green, cancelled: T.red,
 };
+const statusColor = st => STATUS_COLORS[st] || T.textDim;
+// Active statuses sort/show before terminal ones; cancelled sinks to the bottom.
+const STATUS_RANK = { pending_approval: 0, requested: 1, do_issued: 2, bast_done: 3, reconciled: 4, cancelled: 9 };
 
 export default function SalesRequests() {
   const sr       = useCollection(COL.salesRequests);
   const doC      = useCollection(COL.deliveryOrders);
+  const bastC    = useCollection(COL.bast);
   const clientsC = useCollection(COL.clients);
   const nodesC   = useCollection(COL.nodes);
   const { fuelTypes, error: ftError } = useFuelOpsMaster();
@@ -45,14 +50,37 @@ export default function SalesRequests() {
   const derivedBucket = scheme?.bucket;
   const derivedIssuer = scheme ? ISSUERS[scheme.issuer]?.name : '';
 
-  // Newest first (requestedDate desc, then soNumber desc as tiebreak).
-  const sortedRows = useMemo(() => {
+  // Sortable columns — each maps a header key to a comparable value.
+  const sortCols = useMemo(() => ({
+    soNumber: r => r.soNumber || '',
+    date:     r => r.requestedDate || '',
+    client:   r => `${r.clientName || ''} ${r.entityName || ''}`,
+    vessel:   r => r.vesselName || '',
+    scheme:   r => r.scheme || '',
+    fuel:     r => r.fuelTypeShort || r.fuelTypeName || '',
+    volume:   r => Number(r.requestedVolumeL) || 0,
+    status:   r => STATUS_RANK[r.status] ?? 5,
+  }), []);
+
+  // Default view: newest first. Cancelled rows always sink below active ones,
+  // regardless of the chosen sort, so they read as "done/closed".
+  const baseRows = useMemo(() => {
     return [...sr.data].sort((a, b) => {
       const d = String(b.requestedDate || '').localeCompare(String(a.requestedDate || ''));
       if (d !== 0) return d;
       return String(b.soNumber || '').localeCompare(String(a.soNumber || ''));
     });
   }, [sr.data]);
+
+  const { sorted: userSorted, sortKey, sortDir, toggle } = useSort(baseRows, sortCols);
+  // Keep cancelled at the bottom on top of whatever sort is active.
+  const sortedRows = useMemo(() => {
+    return [...userSorted].sort((a, b) => {
+      const ac = a.status === 'cancelled' ? 1 : 0;
+      const bc = b.status === 'cancelled' ? 1 : 0;
+      return ac - bc;
+    });
+  }, [userSorted]);
 
   // Map SO id -> stale DO discrepancy count (item 1: flag SOs whose DO is out of sync).
   const staleBySO = useMemo(() => {
@@ -124,6 +152,35 @@ export default function SalesRequests() {
   const del = async (r) => {
     if (!confirm('Delete this sales order?')) return;
     await sr.remove(r.id);
+  };
+
+  // Cancel an SO (e.g. client cancellation). Cascades: its DO → 'cancelled',
+  // and its still-blank BAST is deleted. Blocked once a BAST has been filled,
+  // because that means fuel was physically delivered and can't be un-delivered.
+  const cancelSO = async (r) => {
+    if (r.status === 'cancelled') return;
+    const theDO = doC.data.find(d => d.salesRequestId === r.id);
+    const theBAST = theDO ? bastC.data.find(b => b.deliveryOrderId === theDO.id) : null;
+
+    if (theBAST && theBAST.status !== 'blank') {
+      alert(`Cannot cancel ${r.soNumber}: its BAST (${theBAST.nomorBast}) is already filled — ` +
+        `the delivery has happened. Reopen/handle the BAST first if this is a correction.`);
+      return;
+    }
+    if (!confirm(
+      `Cancel sales order ${r.soNumber}?\n\n` +
+      (theDO ? `Its delivery order ${theDO.brNo} will also be marked cancelled` +
+        (theBAST ? `, and the blank BAST ${theBAST.nomorBast} will be removed` : '') + '.\n\n' : '') +
+      `Cancelled records are kept for history but can no longer be edited.`
+    )) return;
+
+    try {
+      await sr.update(r.id, { status: 'cancelled' });
+      if (theDO) await doC.update(theDO.id, { status: 'cancelled' });
+      if (theBAST && theBAST.status === 'blank') await bastC.remove(theBAST.id);
+    } catch (e) {
+      alert('Error cancelling: ' + e.message);
+    }
   };
 
   const fmtL = n => (Number(n) || 0).toLocaleString('id-ID');
@@ -272,9 +329,9 @@ export default function SalesRequests() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {pg.pageRows.map(r => (
             <div key={r.id} style={{ ...s.card, padding: 14 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 6 }}>
                 <span style={{ fontFamily: T.font, color: T.amber, fontSize: 11 }}>{r.soNumber || '—'}</span>
-                <span style={{ fontSize: 10, color: STATUS_COLORS[r.status] || T.textDim }}>{r.status}</span>
+                <StatusPill status={r.status} color={statusColor(r.status)} />
               </div>
               <div style={{ fontSize: 13, color: T.text }}>{r.clientName}</div>
               <div style={{ fontSize: 11, color: T.textDim, marginBottom: 6 }}>{r.entityName}</div>
@@ -290,8 +347,13 @@ export default function SalesRequests() {
                   ⚠ Linked DO out of sync ({staleBySO[r.id]} field{staleBySO[r.id] > 1 ? 's' : ''})
                 </div>
               )}
-              <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
-                <button onClick={() => startEdit(r)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10 }}>EDIT</button>
+              <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
+                {r.status !== 'cancelled' && (
+                  <button onClick={() => startEdit(r)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10 }}>EDIT</button>
+                )}
+                {r.status !== 'cancelled' && (
+                  <button onClick={() => cancelSO(r)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10, color: T.red, borderColor: T.red }}>CANCEL</button>
+                )}
                 <button onClick={() => del(r)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10, color: T.red }}>DEL</button>
               </div>
             </div>
@@ -304,14 +366,14 @@ export default function SalesRequests() {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr>
-                <th style={s.th}>SO NUMBER</th>
-                <th style={s.th}>DATE</th>
-                <th style={s.th}>CLIENT / ENTITY</th>
-                <th style={s.th}>VESSEL</th>
-                <th style={s.th}>SCHEME</th>
-                <th style={s.th}>FUEL</th>
-                <th style={{ ...s.th, textAlign: 'right' }}>VOLUME (L)</th>
-                <th style={s.th}>STATUS</th>
+                <SortHeader label="SO NUMBER" colKey="soNumber" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <SortHeader label="DATE" colKey="date" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <SortHeader label="CLIENT / ENTITY" colKey="client" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <SortHeader label="VESSEL" colKey="vessel" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <SortHeader label="SCHEME" colKey="scheme" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <SortHeader label="FUEL" colKey="fuel" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <SortHeader label="VOLUME (L)" colKey="volume" sortKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
+                <SortHeader label="STATUS" colKey="status" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
                 <th style={s.th}></th>
               </tr>
             </thead>
@@ -337,10 +399,15 @@ export default function SalesRequests() {
                   <td style={s.td}>{r.fuelTypeShort || r.fuelTypeName || '—'}</td>
                   <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font }}>{fmtL(r.requestedVolumeL)}</td>
                   <td style={s.td}>
-                    <span style={{ fontSize: 10, color: STATUS_COLORS[r.status] || T.textDim }}>{r.status}</span>
+                    <StatusPill status={r.status} color={statusColor(r.status)} />
                   </td>
                   <td style={{ ...s.td, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    <button onClick={() => startEdit(r)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6 }}>EDIT</button>
+                    {r.status !== 'cancelled' && (
+                      <button onClick={() => startEdit(r)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6 }}>EDIT</button>
+                    )}
+                    {r.status !== 'cancelled' && (
+                      <button onClick={() => cancelSO(r)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6, color: T.red, borderColor: T.red }}>CANCEL</button>
+                    )}
                     <button onClick={() => del(r)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, color: T.red }}>DEL</button>
                   </td>
                 </tr>
