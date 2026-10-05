@@ -8,6 +8,12 @@ import { USI_LOGO } from './assets';
 import { makeQR } from './qr';
 import { usePagination, PaginationBar, useIsNarrow, diffDOtoBAST } from './listUtils';
 
+// Roles permitted to reopen a completed BAST (and, elsewhere, approve). Defined
+// locally so this module doesn't depend on an isApprover export existing in
+// roles.js (which has changed across revisions).
+const APPROVER_ROLES = ['superadmin', 'director', 'supervisor'];
+const isApprover = (role) => APPROVER_ROLES.includes(role);
+
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const INDO_MONTHS = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
 const INDO_DAYS = ['Minggu','Senin','Selasa','Rabu','Kamis','Jumat','Sabtu'];
@@ -24,10 +30,10 @@ function openPrint(html) {
   setTimeout(() => w.print(), 400);
 }
 
-export default function BASTModule() {
+export default function BASTModule({ role }) {
+  const approver = isApprover(role); // supervisor / director / superadmin — may reopen
   const bastC = useCollection(COL.bast);
   const doC   = useCollection(COL.deliveryOrders);
-  const srC   = useCollection(COL.salesRequests);
 
   const [form, setForm]     = useState(null);
   const [editId, setEditId] = useState(null);
@@ -36,18 +42,32 @@ export default function BASTModule() {
 
   const narrow = useIsNarrow();
 
-  const blankBASTs = bastC.data.filter(b => b.status === 'blank');
-
-  // Item 3: order the full list — date desc, then sequence number desc.
-  const sortedBASTs = useMemo(() => {
-    return [...bastC.data].sort((a, b) => {
-      const d = String(b.tanggalBast || '').localeCompare(String(a.tanggalBast || ''));
-      if (d !== 0) return d;
-      return bastSeq(b) - bastSeq(a);
-    });
+  // Blank BASTs awaiting fill — OLDEST first (longest-waiting surfaces at top),
+  // tiebreak by sequence number ascending.
+  const blankBASTs = useMemo(() => {
+    return bastC.data
+      .filter(b => b.status === 'blank')
+      .sort((a, b) => {
+        const d = String(a.tanggalBast || '').localeCompare(String(b.tanggalBast || ''));
+        if (d !== 0) return d;
+        return bastSeq(a) - bastSeq(b);
+      });
   }, [bastC.data]);
 
-  const pg = usePagination(sortedBASTs, 20);
+  // Bottom list is COMPLETED (filled) BASTs only — newest first, seq desc tiebreak.
+  // Blank ones live only in the strip above, so the two sections never overlap.
+  const sortedBASTs = useMemo(() => {
+    return bastC.data
+      .filter(b => b.status !== 'blank')
+      .sort((a, b) => {
+        const d = String(b.tanggalBast || '').localeCompare(String(a.tanggalBast || ''));
+        if (d !== 0) return d;
+        return bastSeq(b) - bastSeq(a);
+      });
+  }, [bastC.data]);
+
+  const pg      = usePagination(sortedBASTs, 20);  // completed list pager
+  const blankPg = usePagination(blankBASTs, 20);   // independent blank-strip pager
 
   const doById = useMemo(() => {
     const m = {};
@@ -136,12 +156,13 @@ export default function BASTModule() {
         signers: form.signers,
         status: 'bast_done',
       };
+      // Operator writes ONLY the BAST. The linked DO (→ 'delivered') and SO
+      // (→ 'bast_done') status flips are performed server-side by a Cloud Function
+      // that triggers on this BAST reaching 'bast_done'. This keeps operators from
+      // needing write access to deliveryOrders / salesRequests (which the Firestore
+      // rules deny them) — the earlier in-app cascade was what caused the
+      // "missing authentication" error on operator saves.
       await bastC.update(editId, payload);
-      if (form.deliveryOrderId) {
-        await doC.update(form.deliveryOrderId, { status: 'delivered' });
-        const theDO = doC.data.find(x => x.id === form.deliveryOrderId);
-        if (theDO?.salesRequestId) await srC.update(theDO.salesRequestId, { status: 'bast_done' });
-      }
       cancel();
     } catch (e) {
       alert('Error saving BAST: ' + e.message);
@@ -181,6 +202,22 @@ export default function BASTModule() {
     await bastC.remove(b.id);
   };
 
+  // Reopen a completed BAST → back to 'blank' so it re-enters the fill queue for
+  // correction. Supervisor+ only. Setting status to 'blank' triggers the Cloud
+  // Function to REVERT the linked DO (→ issued) and SO (→ do_issued).
+  const reopen = async (b) => {
+    if (!approver) return;
+    if (!confirm(
+      `Reopen BAST ${b.nomorBast}? It returns to the blank/pre-bunker queue for correction, ` +
+      `and its linked DO and Sales Order revert to their pre-delivery status.`
+    )) return;
+    try {
+      await bastC.update(b.id, { status: 'blank' });
+    } catch (e) {
+      alert('Error reopening BAST: ' + e.message);
+    }
+  };
+
   const fmtL = n => (Number(n) || 0).toLocaleString('id-ID');
   const clientOf = b => b.recipient?.entityName || '—';
   const vesselOf = b => b.recipient?.vesselName || '—';
@@ -198,14 +235,14 @@ export default function BASTModule() {
       {!form && blankBASTs.length > 0 && (
         <div style={{ ...s.card, marginBottom: 20 }}>
           <div style={{ fontSize: 10, color: T.textDim, letterSpacing: 1.5, marginBottom: 10 }}>
-            BLANK BASTs — PRINT PRE-BUNKER, FILL AFTER LOADING
+            BLANK BASTs — PRINT PRE-BUNKER, FILL AFTER LOADING · OLDEST FIRST
           </div>
-          {blankBASTs.map(b => (
+          {blankPg.pageRows.map(b => (
             <div key={b.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
               gap: 8, flexWrap: 'wrap', padding: '8px 0', borderBottom: `1px solid ${T.border}` }}>
               <div style={{ fontSize: 12 }}>
                 <span style={{ color: T.amber, fontFamily: T.font, fontSize: 11 }}>{b.nomorBast}</span>
-                <span style={{ color: T.textDim }}> · DO {b.supplier?.deliveryOrder} · {clientOf(b)} · {vesselOf(b)} · {fmtL(b.dispatchedVolumeL)} L</span>
+                <span style={{ color: T.textDim }}> · {b.tanggalBast} · DO {b.supplier?.deliveryOrder} · {clientOf(b)} · {vesselOf(b)} · {fmtL(b.dispatchedVolumeL)} L</span>
               </div>
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                 <button onClick={() => printBAST(b)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10 }}>
@@ -217,6 +254,7 @@ export default function BASTModule() {
               </div>
             </div>
           ))}
+          <PaginationBar {...blankPg} />
         </div>
       )}
 
@@ -387,11 +425,14 @@ export default function BASTModule() {
         </div>
       )}
 
-      {/* List */}
+      {/* Completed BAST list */}
+      <div style={{ fontSize: 10, color: T.textDim, letterSpacing: 1.5, margin: '4px 0 10px' }}>
+        COMPLETED BASTs
+      </div>
       {bastC.loading ? (
         <div style={{ color: T.textDim, fontSize: 12 }}>Loading…</div>
-      ) : bastC.data.length === 0 ? (
-        <div style={{ color: T.textFaint, fontSize: 12, padding: 20 }}>No BAST records yet.</div>
+      ) : sortedBASTs.length === 0 ? (
+        <div style={{ color: T.textFaint, fontSize: 12, padding: 20 }}>No completed BAST records yet.</div>
       ) : narrow ? (
         // -------- Mobile: stacked cards --------
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -432,6 +473,9 @@ export default function BASTModule() {
                       style={{ ...s.btn('primary'), padding: '5px 12px', fontSize: 10 }}>
                       {syncBusy[b.id] ? 'SYNCING…' : 'SYNC FROM DO'}
                     </button>
+                  )}
+                  {approver && b.status !== 'blank' && (
+                    <button onClick={() => reopen(b)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10 }}>REOPEN</button>
                   )}
                   <button onClick={() => del(b)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10, color: T.red }}>DEL</button>
                 </div>
@@ -491,6 +535,9 @@ export default function BASTModule() {
                           style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6, color: T.amber, borderColor: T.amber }}>
                           {syncBusy[b.id] ? 'SYNC…' : 'SYNC'}
                         </button>
+                      )}
+                      {approver && b.status !== 'blank' && (
+                        <button onClick={() => reopen(b)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6 }}>REOPEN</button>
                       )}
                       <button onClick={() => del(b)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, color: T.red }}>DEL</button>
                     </td>
