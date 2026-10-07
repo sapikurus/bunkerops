@@ -14,8 +14,13 @@ export const COL = {
   stockCards:    PFX + 'stockCards',
   users:         PFX + 'users',
   counters:      PFX + 'counters',   // atomic yearly sequence allocator
+  invoices:      PFX + 'invoices',   // commercial pricing per delivered DO (control only)
   healthcheck:   PFX + 'healthcheck',
 };
+
+// Tax constants for commercial pricing. PPN 11% on (DPP+OAT); PBBKB a % of DPP
+// only, not charged yet (no wapu) but the field is kept for the future.
+export const PPN_PCT = 11;
 
 // Our DO-issuing entities (Galley is client-side, never an issuer here).
 export const ISSUERS = {

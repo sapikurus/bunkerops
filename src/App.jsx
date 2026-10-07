@@ -1,20 +1,23 @@
 import { useState, useEffect } from 'react';
 import { T } from './tokens';
 import { APP_NAME } from './config';
-import { canAccess, ROLES } from './roles';
+import { canAccess, canCommercial, ROLES } from './roles';
 import SalesRequests from './modules/SalesRequests';
 import DeliveryOrders from './modules/DeliveryOrders';
 import BASTModule from './modules/BASTModule';
 import StockCards from './modules/StockCards';
+import Invoicing from './modules/Invoicing';
 import Settings from './modules/Settings';
 
 // Menu items with the capability each requires. Nodes/Clients now live inside Settings.
+// 'commercial' and 'settings' are role/aggregate gated rather than a single cap.
 const MENU = [
-  { key: 'sales',    label: 'Sales Requests',  icon: '📋', cap: 'salesOrder' },
-  { key: 'do',       label: 'Delivery Orders', icon: '📦', cap: 'deliveryOrder' },
-  { key: 'bast',     label: 'BAST',            icon: '📑', cap: 'bast' },
-  { key: 'stock',    label: 'Stock Cards',     icon: '📊', cap: 'stockCards' },
-  { key: 'settings', label: 'Settings',        icon: '⚙',  cap: null }, // shown if any settings sub-tab is allowed
+  { key: 'sales',      label: 'Sales Requests',  icon: '📋', cap: 'salesOrder' },
+  { key: 'do',         label: 'Delivery Orders', icon: '📦', cap: 'deliveryOrder' },
+  { key: 'bast',       label: 'BAST',            icon: '📑', cap: 'bast' },
+  { key: 'stock',      label: 'Stock Cards',     icon: '📊', cap: 'stockCards' },
+  { key: 'commercial', label: 'Commercial',      icon: '💰', cap: null }, // role-gated (commercial/director/superadmin)
+  { key: 'settings',   label: 'Settings',        icon: '⚙',  cap: null }, // shown if any settings sub-tab is allowed
 ];
 
 export default function App({ user, role, signOut }) {
@@ -25,7 +28,11 @@ export default function App({ user, role, signOut }) {
 
   // Settings shows if the role can access any of its sub-areas.
   const canSettings = canAccess(role, 'generalSettings') || canAccess(role, 'masterData') || canAccess(role, 'usersRoles');
-  const items = MENU.filter(m => m.key === 'settings' ? canSettings : canAccess(role, m.cap));
+  const items = MENU.filter(m => {
+    if (m.key === 'settings')   return canSettings;
+    if (m.key === 'commercial') return canCommercial(role);
+    return canAccess(role, m.cap);
+  });
 
   const [active, setActive] = useState(items[0]?.key || 'do');
 
@@ -35,6 +42,7 @@ export default function App({ user, role, signOut }) {
       case 'do':       return <DeliveryOrders role={role} />;
       case 'bast':     return <BASTModule role={role} />;
       case 'stock':    return <StockCards role={role} user={user} />;
+      case 'commercial': return <Invoicing role={role} user={user} />;
       case 'settings': return <Settings role={role} />;
       default:
         return <div style={{ color: T.textDim, padding: 40 }}>Select a menu.</div>;

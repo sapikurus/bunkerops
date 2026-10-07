@@ -19,9 +19,17 @@ export const ROLES = {
   director:   { key: 'director',   label: 'Director' },
   supervisor: { key: 'supervisor', label: 'Supervisor' },
   operator:   { key: 'operator',   label: 'Operator' },
+  commercial: { key: 'commercial', label: 'Commercial' },
 };
 
-export const ROLE_ORDER = ['superadmin', 'director', 'supervisor', 'operator'];
+export const ROLE_ORDER = ['superadmin', 'director', 'supervisor', 'operator', 'commercial'];
+
+// Roles that may see the Commercial (invoicing-control) submenu. This is a role
+// gate, not a capability — commercial users have no operational capabilities.
+export const COMMERCIAL_ROLES = ['superadmin', 'director', 'commercial'];
+export function canCommercial(role) {
+  return COMMERCIAL_ROLES.includes(role);
+}
 
 // Permission levels per capability:
 //   'edit'  = full create/edit/delete
@@ -45,6 +53,12 @@ export const PERMISSIONS = {
   operator: {
     masterData: false, salesOrder: false, deliveryOrder: 'view',
     bast: 'fill', stockCards: 'view', usersRoles: false, generalSettings: false,
+  },
+  // Commercial sees ONLY the Commercial submenu (gated by role, not capability).
+  // No operational access at all.
+  commercial: {
+    masterData: false, salesOrder: false, deliveryOrder: false,
+    bast: false, stockCards: false, usersRoles: false, generalSettings: false,
   },
 };
 
