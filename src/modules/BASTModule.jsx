@@ -50,10 +50,17 @@ export default function BASTModule({ role }) {
 
   // Blank BASTs awaiting fill — OLDEST first (longest-waiting surfaces at top),
   // tiebreak by sequence number ascending.
+  // Blank BASTs awaiting fill. Ordering: items with an explicit `priority` come
+  // first in ascending priority; anything un-prioritized falls back to oldest
+  // date (then sequence). So the default view is by date until a user reorders.
   const blankBASTs = useMemo(() => {
+    const hasP = b => b.priority !== undefined && b.priority !== null && b.priority !== '';
     return bastC.data
       .filter(b => b.status === 'blank')
       .sort((a, b) => {
+        const ap = hasP(a), bp = hasP(b);
+        if (ap && bp) return Number(a.priority) - Number(b.priority);
+        if (ap !== bp) return ap ? -1 : 1; // prioritized before un-prioritized
         const d = String(a.tanggalBast || '').localeCompare(String(b.tanggalBast || ''));
         if (d !== 0) return d;
         return bastSeq(a) - bastSeq(b);
@@ -236,6 +243,36 @@ export default function BASTModule({ role }) {
     }
   };
 
+  // Reorder a blank BAST up/down the fill queue. Anyone may reorder. On the first
+  // move we materialise the current visual order into explicit `priority` numbers
+  // (0,1,2…), swap the moved item with its neighbour, and persist only the two
+  // rows whose priority actually changed. `dir` is -1 (up) or +1 (down).
+  const [moveBusy, setMoveBusy] = useState(false);
+  const moveBlank = async (b, dir) => {
+    if (moveBusy) return;
+    const order = blankBASTs;                 // already in display order
+    const i = order.findIndex(x => x.id === b.id);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= order.length) return; // at an edge
+    setMoveBusy(true);
+    try {
+      // Assign sequential priorities with i and j swapped.
+      const nextIds = order.map(x => x.id);
+      [nextIds[i], nextIds[j]] = [nextIds[j], nextIds[i]];
+      // Persist only rows whose priority changes (keeps writes minimal).
+      const writes = [];
+      nextIds.forEach((id, idx) => {
+        const cur = order.find(x => x.id === id);
+        if (Number(cur.priority) !== idx) writes.push(bastC.update(id, { priority: idx }));
+      });
+      await Promise.all(writes);
+    } catch (e) {
+      alert('Error reordering: ' + e.message);
+    } finally {
+      setMoveBusy(false);
+    }
+  };
+
   const fmtL = n => (Number(n) || 0).toLocaleString('id-ID');
   const clientOf = b => b.recipient?.entityName || '—';
   const vesselOf = b => b.recipient?.vesselName || '—';
@@ -253,25 +290,42 @@ export default function BASTModule({ role }) {
       {!form && blankBASTs.length > 0 && (
         <div style={{ ...s.card, marginBottom: 20 }}>
           <div style={{ fontSize: 10, color: T.textDim, letterSpacing: 1.5, marginBottom: 10 }}>
-            BLANK BASTs — PRINT PRE-BUNKER, FILL AFTER LOADING · OLDEST FIRST
+            BLANK BASTs — PRINT PRE-BUNKER, FILL AFTER LOADING · ↑↓ TO PRIORITISE
           </div>
-          {blankPg.pageRows.map(b => (
-            <div key={b.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-              gap: 8, flexWrap: 'wrap', padding: '8px 0', borderBottom: `1px solid ${T.border}` }}>
-              <div style={{ fontSize: 12 }}>
-                <span style={{ color: T.amber, fontFamily: T.font, fontSize: 11 }}>{b.nomorBast}</span>
-                <span style={{ color: T.textDim }}> · {b.tanggalBast} · DO {b.supplier?.deliveryOrder} · {clientOf(b)} · {vesselOf(b)} · {fmtL(b.dispatchedVolumeL)} L</span>
+          {blankPg.pageRows.map(b => {
+            const idx = blankBASTs.findIndex(x => x.id === b.id); // position in full queue
+            return (
+              <div key={b.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                gap: 8, flexWrap: 'wrap', padding: '8px 0', borderBottom: `1px solid ${T.border}` }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {/* Priority rank + reorder arrows */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                    <span style={{ fontFamily: T.font, fontSize: 11, color: T.amber, minWidth: 20, textAlign: 'right' }}>#{idx + 1}</span>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 1, marginLeft: 2 }}>
+                      <button onClick={() => moveBlank(b, -1)} disabled={moveBusy || idx === 0}
+                        title="Move up" style={{ ...s.btn('ghost'), padding: '0 6px', fontSize: 9, lineHeight: '14px',
+                          opacity: (moveBusy || idx === 0) ? 0.3 : 1, cursor: idx === 0 ? 'default' : 'pointer' }}>▲</button>
+                      <button onClick={() => moveBlank(b, 1)} disabled={moveBusy || idx === blankBASTs.length - 1}
+                        title="Move down" style={{ ...s.btn('ghost'), padding: '0 6px', fontSize: 9, lineHeight: '14px',
+                          opacity: (moveBusy || idx === blankBASTs.length - 1) ? 0.3 : 1, cursor: idx === blankBASTs.length - 1 ? 'default' : 'pointer' }}>▼</button>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 12 }}>
+                    <span style={{ color: T.amber, fontFamily: T.font, fontSize: 11 }}>{b.nomorBast}</span>
+                    <span style={{ color: T.textDim }}> · {b.tanggalBast} · DO {b.supplier?.deliveryOrder} · {clientOf(b)} · {vesselOf(b)} · {fmtL(b.dispatchedVolumeL)} L</span>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  <button onClick={() => printBAST(b)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10 }}>
+                    PRINT BLANK
+                  </button>
+                  <button onClick={() => startEdit(b)} style={{ ...s.btn('primary'), padding: '5px 14px', fontSize: 10 }}>
+                    FILL →
+                  </button>
+                </div>
               </div>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                <button onClick={() => printBAST(b)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10 }}>
-                  PRINT BLANK
-                </button>
-                <button onClick={() => startEdit(b)} style={{ ...s.btn('primary'), padding: '5px 14px', fontSize: 10 }}>
-                  FILL →
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
           <PaginationBar {...blankPg} />
         </div>
       )}

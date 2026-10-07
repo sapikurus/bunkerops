@@ -374,7 +374,9 @@ export default function DeliveryOrders() {
             <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
               gap: 10, flexWrap: 'wrap', padding: '8px 0', borderBottom: `1px solid ${T.border}` }}>
               <div style={{ fontSize: 12 }}>
-                <span style={{ color: T.text }}>{r.entityName}</span>
+                <span style={{ color: T.amber, fontFamily: T.font, fontSize: 10 }}>{r.soNumber || '—'}</span>
+                <span style={{ color: T.textFaint, fontSize: 10 }}> · {r.requestedDate || '—'}</span>
+                <span style={{ color: T.text }}>  {r.entityName}</span>
                 <span style={{ color: T.textDim }}> · {r.vesselName} · {r.fuelTypeShort} · {fmtL(r.requestedVolumeL)} L</span>
                 <span style={{ color: r.scheme === 'PPS_SALE' ? T.green : T.blue, fontSize: 10 }}>
                   {' '}({r.scheme === 'PPS_SALE' ? 'PPS' : 'Non-PPS'})
