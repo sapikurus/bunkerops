@@ -3,7 +3,7 @@ import { T, s } from '../tokens';
 import { COL, PPN_PCT } from '../config';
 import { useCollection } from './useCollection';
 import { canCommercial } from '../roles';
-import { usePagination, PaginationBar, useIsNarrow, useSort, SortHeader } from './listUtils';
+import { usePagination, PaginationBar, useIsNarrow, useSort, SortHeader, StatusPill } from './listUtils';
 
 // Commercial pricing-control module. Lists DELIVERED (non-cancelled) DOs with the
 // 15°C received quantity from their BAST, and lets commercial/director/superadmin
@@ -25,6 +25,13 @@ const SO_STATUS_LABELS = {
   bast_done:        'BAST done',
   reconciled:       'Reconciled',
   cancelled:        'Cancelled',
+};
+// Canonical lifecycle order (drives status sort + dropdown ordering).
+const STATUS_ORDER = ['pending_approval', 'requested', 'do_issued', 'bast_done', 'reconciled', 'cancelled'];
+// Status pill colors, matching the Sales Orders submenu.
+const SO_STATUS_COLORS = {
+  pending_approval: '#f59e0b', requested: T.blue, do_issued: T.amber,
+  bast_done: '#a855f7', reconciled: T.green, cancelled: T.red,
 };
 
 // Money with 2 decimals, id-ID separators: "Rp 1.234.567,89".
@@ -75,40 +82,48 @@ export default function Invoicing({ role, user }) {
     return m;
   }, [invC.data]);
 
-  // Parent SO by id (for SO number, PO ref, SO date on each row).
-  const soById = useMemo(() => {
+  // DO by its originating SO id (so each SO row can find its delivery order).
+  const doBySO = useMemo(() => {
     const m = {};
-    for (const r of srC.data) m[r.id] = r;
+    for (const d of doC.data) {
+      if (d.status === 'cancelled') continue;
+      if (d.salesRequestId) m[d.salesRequestId] = d;
+    }
     return m;
-  }, [srC.data]);
+  }, [doC.data]);
 
-  // Build the billable rows: delivered, non-cancelled DOs, joined to BAST + invoice.
+  // Build the rows SO-first: every non-cancelled SO is a row (so the full
+  // lifecycle — requested, DO issued, BAST done — shows and is sortable by
+  // status, like the Sales Orders submenu). DO / BAST / invoice rates attach
+  // when they exist; pricing columns stay blank until a BAST gives a 15°C qty.
   const rows = useMemo(() => {
-    return doC.data
-      .filter(d => d.status === 'delivered')
-      .map(d => {
-        const b = bastByDO[d.id];
-        const iv = invById[d.id] || {};
-        const so = soById[d.salesRequestId] || {};
+    return srC.data
+      .filter(so => so.status !== 'cancelled')
+      .map(so => {
+        const d = doBySO[so.id] || null;
+        const b = d ? bastByDO[d.id] : null;
+        const iv = d ? (invById[d.id] || {}) : {};
         const qty = Number(b?.qty?.literStandard) || 0;   // 15°C received
         const money = compute(qty, iv.dppRate, iv.oatRate, iv.pbbkbRate);
         const priced = iv.dppRate != null && iv.dppRate !== '';
         // Cargo type drives which commercial view applies. Scheme is the source of
         // truth (PPS_SALE = PPS cargo; NON_PPS_SALE = MBSS cargo). Fall back to bucket.
-        const scheme = so.scheme || d.scheme || '';
-        const bucket = so.bucket || d.bucket || '';
+        const scheme = so.scheme || d?.scheme || '';
+        const bucket = so.bucket || d?.bucket || '';
         const cargo = (scheme === 'NON_PPS_SALE' || bucket === 'MBSS') ? 'MBSS' : 'PPS';
         return {
-          id: d.id,
-          brNo: d.brNo,
+          id: so.id,                         // row keyed by SO
+          doId: d?.id || null,               // the DO that pricing is written against
+          brNo: d?.brNo || '',
           cargo,
-          soNumber: so.soNumber || d.soNumber || '',
+          soNumber: so.soNumber || d?.soNumber || '',
           soStatus: so.status || '',
           soDate: so.requestedDate || '',
-          poRef: so.galleyPoRef || d.clientPoRef || '',
+          poRef: so.galleyPoRef || d?.clientPoRef || '',
           bastDate: b?.tanggalBast || '',
-          client: d.deliverTo || '',
-          vessel: d.vesselName || '',
+          client: so.clientName || d?.deliverTo || '',
+          entity: so.entityName || '',
+          vessel: so.vesselName || d?.vesselName || '',
           qty,
           hasBast: !!b,
           dppRate: iv.dppRate ?? '',
@@ -118,7 +133,7 @@ export default function Invoicing({ role, user }) {
           ...money,
         };
       });
-  }, [doC.data, bastByDO, invById, soById]);
+  }, [srC.data, doBySO, bastByDO, invById]);
 
   // ---- Cargo type: PPS (default) vs MBSS. MBSS gets a different layout later. --
   const [cargo, setCargo] = useState('PPS');   // 'PPS' | 'MBSS'
@@ -141,8 +156,7 @@ export default function Invoicing({ role, user }) {
     () => [...new Set(cargoRows.map(r => r.vessel).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
     [cargoRows]);
   // SO-status options actually present in this cargo's rows, ordered by the
-  // canonical lifecycle so the dropdown reads BAST done / requested / DO issued etc.
-  const STATUS_ORDER = ['pending_approval', 'requested', 'do_issued', 'bast_done', 'reconciled', 'cancelled'];
+  // canonical lifecycle so the dropdown reads requested / DO issued / BAST done etc.
   const statusOpts = useMemo(() => {
     const present = new Set(cargoRows.map(r => r.soStatus).filter(Boolean));
     return STATUS_ORDER.filter(st => present.has(st));
@@ -171,6 +185,7 @@ export default function Invoicing({ role, user }) {
     bastDate: r => r.bastDate || '',
     client:   r => r.client || '',
     vessel:   r => r.vessel || '',
+    status:   r => STATUS_ORDER.indexOf(r.soStatus),
     qty:      r => r.qty,
     subtotal: r => r.subtotal,
     priced:   r => (r.priced ? 1 : 0),
@@ -187,8 +202,9 @@ export default function Invoicing({ role, user }) {
   const { sorted, sortKey, sortDir, toggle } = useSort(baseRows, sortCols);
   const pg = usePagination(sorted, 20);
 
-  // Selection helpers (operate over the full sorted set, not just the page).
-  const selectableIds = sorted.filter(r => r.hasBast).map(r => r.id);
+  // Only rows that have a BAST (hence a DO + 15°C qty) can be priced/selected.
+  // Selection is keyed by the SO row id; the DO id is what pricing writes against.
+  const selectableIds = sorted.filter(r => r.hasBast && r.doId).map(r => r.id);
   const selectedIds = Object.keys(sel).filter(id => sel[id]);
   const allSelected = selectableIds.length > 0 && selectableIds.every(id => sel[id]);
   const toggleAll = () => {
@@ -197,14 +213,22 @@ export default function Invoicing({ role, user }) {
   };
   const toggleOne = (id) => setSel(m => ({ ...m, [id]: !m[id] }));
 
+  // Resolve selected SO rows → their DO ids (pricing docs live under DO id).
+  const doIdById = useMemo(() => {
+    const m = {};
+    for (const r of rows) m[r.id] = r.doId;
+    return m;
+  }, [rows]);
+
   // Apply the entered rates to all selected DOs.
   const applyRates = async () => {
     if (!canWrite || busy) return;
-    if (selectedIds.length === 0) { alert('Select at least one delivery order.'); return; }
+    const doIds = selectedIds.map(id => doIdById[id]).filter(Boolean);
+    if (doIds.length === 0) { alert('Select at least one delivery order with a completed BAST.'); return; }
     if (dppRate === '' && oatRate === '' && pbbkbRate === '') {
       alert('Enter at least one rate (DPP, OAT, or PBBKB) to apply.'); return;
     }
-    if (!confirm(`Apply the entered rates to ${selectedIds.length} delivery order(s)?`)) return;
+    if (!confirm(`Apply the entered rates to ${doIds.length} delivery order(s)?`)) return;
     setBusy(true);
     try {
       // Only write the rate fields that were actually entered; leave others as they were.
@@ -212,7 +236,7 @@ export default function Invoicing({ role, user }) {
       if (dppRate   !== '') patch.dppRate   = Number(dppRate);
       if (oatRate   !== '') patch.oatRate   = Number(oatRate);
       if (pbbkbRate !== '') patch.pbbkbRate = Number(pbbkbRate);
-      await Promise.all(selectedIds.map(id => invC.setWithId(id, patch)));
+      await Promise.all(doIds.map(id => invC.setWithId(id, patch)));
       setSel({});
     } catch (e) {
       alert('Error applying rates: ' + e.message);
@@ -239,8 +263,9 @@ export default function Invoicing({ role, user }) {
       <div style={{ marginBottom: 20 }}>
         <div style={{ fontSize: 11, color: T.amber, letterSpacing: 1.5 }}>COMMERCIAL — PRICING CONTROL</div>
         <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>
-          Delivered DOs with their 15°C received quantity. Set DPP &amp; OAT (Rp/L) and PBBKB (% of DPP)
-          across several at once. PPN is {PPN_PCT}% of DPP+OAT. Control/record only — invoices are issued elsewhere.
+          All sales orders with their live status; pricing opens once a BAST gives a 15°C quantity.
+          Set DPP &amp; OAT (Rp/L) and PBBKB (% of DPP) across several at once. PPN is {PPN_PCT}% of DPP+OAT.
+          Control/record only — invoices are issued elsewhere.
         </div>
       </div>
 
@@ -275,7 +300,7 @@ export default function Invoicing({ role, user }) {
         <div style={{ ...s.card, padding: 28, textAlign: 'center' }}>
           <div style={{ fontSize: 12, color: T.blue, letterSpacing: 1.5 }}>MBSS CARGO</div>
           <div style={{ fontSize: 13, color: T.text, marginTop: 8 }}>
-            {cargoRows.length} delivered MBSS delivery order{cargoRows.length === 1 ? '' : 's'}.
+            {cargoRows.length} MBSS sales order{cargoRows.length === 1 ? '' : 's'}.
           </div>
           <div style={{ fontSize: 12, color: T.textDim, marginTop: 6 }}>
             MBSS cargo uses a different commercial layout — coming next. Switch back to{' '}
@@ -367,7 +392,7 @@ export default function Invoicing({ role, user }) {
       {doC.loading || bastC.loading ? (
         <div style={{ color: T.textDim, fontSize: 12 }}>Loading…</div>
       ) : cargoRows.length === 0 ? (
-        <div style={{ color: T.textFaint, fontSize: 12, padding: 20 }}>No delivered PPS-cargo delivery orders yet.</div>
+        <div style={{ color: T.textFaint, fontSize: 12, padding: 20 }}>No PPS-cargo sales orders yet.</div>
       ) : filteredRows.length === 0 ? (
         <div style={{ color: T.textFaint, fontSize: 12, padding: 20 }}>
           No delivery orders match the current filters.{' '}
@@ -380,22 +405,22 @@ export default function Invoicing({ role, user }) {
             <div key={r.id} style={{ ...s.card, padding: 14, opacity: r.hasBast ? 1 : 0.6 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <input type="checkbox" checked={!!sel[r.id]} disabled={!r.hasBast || !canWrite}
+                  <input type="checkbox" checked={!!sel[r.id]} disabled={!r.hasBast || !r.doId || !canWrite}
                     onChange={() => toggleOne(r.id)} />
                   <span style={{ fontFamily: T.font, color: T.amber, fontSize: 11 }}>{r.soNumber || '—'}</span>
                 </label>
-                <span style={{ fontSize: 10, color: r.priced ? T.green : T.textFaint }}>
-                  {r.priced ? 'priced' : 'not priced'}
-                </span>
+                <StatusPill status={r.soStatus} color={SO_STATUS_COLORS[r.soStatus]}
+                  label={SO_STATUS_LABELS[r.soStatus]} />
               </div>
               <div style={{ fontSize: 10, color: T.textFaint, marginTop: 2 }}>
                 PO {r.poRef || '—'} · SO {r.soDate || '—'}
               </div>
               <div style={{ fontSize: 13, color: T.text, marginTop: 4 }}>{r.client}</div>
+              {r.entity && <div style={{ fontSize: 11, color: T.textDim }}>{r.entity}</div>}
               <div style={{ fontSize: 11, color: T.textDim, display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
                 <span>BAST {r.bastDate || '—'}</span>
                 <span>· {r.vessel || '—'}</span>
-                <span style={{ fontFamily: T.font }}>· {r.hasBast ? fmtL(r.qty) + ' L' : 'no BAST'}</span>
+                <span style={{ fontFamily: T.font }}>· {r.hasBast ? fmtL(r.qty) + ' L' : 'awaiting BAST'}</span>
               </div>
               {r.priced && (
                 <div style={{ fontSize: 11, color: T.textDim, marginTop: 6, lineHeight: 1.7 }}>
@@ -426,6 +451,7 @@ export default function Invoicing({ role, user }) {
                   <SortHeader label="BAST DATE" colKey="bastDate" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
                   <SortHeader label="CLIENT" colKey="client" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
                   <SortHeader label="VESSEL" colKey="vessel" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                  <SortHeader label="STATUS" colKey="status" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
                   <SortHeader label="QTY 15°C (L)" colKey="qty" sortKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
                   <th style={{ ...s.th, textAlign: 'right' }}>DPP</th>
                   <th style={{ ...s.th, textAlign: 'right' }}>OAT</th>
@@ -439,17 +465,24 @@ export default function Invoicing({ role, user }) {
                 {pg.pageRows.map(r => (
                   <tr key={r.id} style={{ opacity: r.hasBast ? 1 : 0.55 }}>
                     <td style={{ ...s.td, width: 28 }}>
-                      <input type="checkbox" checked={!!sel[r.id]} disabled={!r.hasBast || !canWrite}
+                      <input type="checkbox" checked={!!sel[r.id]} disabled={!r.hasBast || !r.doId || !canWrite}
                         onChange={() => toggleOne(r.id)} />
                     </td>
                     <td style={{ ...s.td, fontFamily: T.font, color: T.amber, fontSize: 10 }}>{r.soNumber || '—'}</td>
                     <td style={{ ...s.td, fontSize: 10 }}>{r.poRef || '—'}</td>
                     <td style={s.td}>{r.soDate || '—'}</td>
                     <td style={s.td}>{r.bastDate || '—'}</td>
-                    <td style={s.td}>{r.client}</td>
+                    <td style={s.td}>
+                      {r.client}
+                      {r.entity && <div style={{ fontSize: 10, color: T.textDim }}>{r.entity}</div>}
+                    </td>
                     <td style={s.td}>{r.vessel || '—'}</td>
+                    <td style={s.td}>
+                      <StatusPill status={r.soStatus} color={SO_STATUS_COLORS[r.soStatus]}
+                        label={SO_STATUS_LABELS[r.soStatus]} />
+                    </td>
                     <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font }}>
-                      {r.hasBast ? fmtL(r.qty) : <span style={{ color: T.red, fontSize: 10 }}>no BAST</span>}
+                      {r.hasBast ? fmtL(r.qty) : <span style={{ color: T.textFaint, fontSize: 10 }}>—</span>}
                     </td>
                     <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font, fontSize: 10 }}>{r.priced ? fmtRp(r.dpp) : '—'}</td>
                     <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font, fontSize: 10 }}>{r.priced ? fmtRp(r.oat) : '—'}</td>
@@ -467,7 +500,7 @@ export default function Invoicing({ role, user }) {
               <tfoot>
                 <tr style={{ borderTop: `2px solid ${T.border}` }}>
                   <td style={s.td}></td>
-                  <td style={{ ...s.td, fontSize: 10, color: T.textDim, letterSpacing: 1 }} colSpan={6}>GRAND TOTAL (filtered)</td>
+                  <td style={{ ...s.td, fontSize: 10, color: T.textDim, letterSpacing: 1 }} colSpan={7}>GRAND TOTAL (filtered)</td>
                   <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font }}>{fmtL(totals.qty)}</td>
                   <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font, fontSize: 10 }}>{fmtRp(totals.dpp)}</td>
                   <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font, fontSize: 10 }}>{fmtRp(totals.oat)}</td>
