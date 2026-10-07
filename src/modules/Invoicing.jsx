@@ -91,6 +91,34 @@ export default function Invoicing({ role, user }) {
       });
   }, [doC.data, bastByDO, invById]);
 
+  // ---- Filters: delivery (BAST) date range, company, vessel ----------------
+  const [fFrom, setFFrom]     = useState('');
+  const [fTo, setFTo]         = useState('');
+  const [fClient, setFClient] = useState('');
+  const [fVessel, setFVessel] = useState('');
+
+  // Distinct dropdown options from the current delivered rows.
+  const clientOpts = useMemo(
+    () => [...new Set(rows.map(r => r.client).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+    [rows]);
+  const vesselOpts = useMemo(
+    () => [...new Set(rows.map(r => r.vessel).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+    [rows]);
+
+  const filtersActive = fFrom || fTo || fClient || fVessel;
+  const clearFilters = () => { setFFrom(''); setFTo(''); setFClient(''); setFVessel(''); };
+
+  // Apply filters (by BAST date range + exact company/vessel) before sort/paginate.
+  const filteredRows = useMemo(() => {
+    return rows.filter(r => {
+      if (fFrom && (!r.bastDate || r.bastDate < fFrom)) return false;
+      if (fTo   && (!r.bastDate || r.bastDate > fTo))   return false;
+      if (fClient && r.client !== fClient) return false;
+      if (fVessel && r.vessel !== fVessel) return false;
+      return true;
+    });
+  }, [rows, fFrom, fTo, fClient, fVessel]);
+
   // Sortable columns.
   const sortCols = useMemo(() => ({
     brNo:     r => r.brNo || '',
@@ -104,11 +132,11 @@ export default function Invoicing({ role, user }) {
 
   // Default: unpriced first (so what needs attention surfaces), then BAST date desc.
   const baseRows = useMemo(() => {
-    return [...rows].sort((a, b) => {
+    return [...filteredRows].sort((a, b) => {
       if (a.priced !== b.priced) return a.priced ? 1 : -1;
       return String(b.bastDate || '').localeCompare(String(a.bastDate || ''));
     });
-  }, [rows]);
+  }, [filteredRows]);
 
   const { sorted, sortKey, sortDir, toggle } = useSort(baseRows, sortCols);
   const pg = usePagination(sorted, 20);
@@ -147,12 +175,12 @@ export default function Invoicing({ role, user }) {
     }
   };
 
-  // Grand totals across all billable rows (not just selected / page).
-  const totals = useMemo(() => rows.reduce((acc, r) => {
+  // Grand totals across the FILTERED rows (so totals reflect the current view).
+  const totals = useMemo(() => filteredRows.reduce((acc, r) => {
     acc.qty += r.qty; acc.dpp += r.dpp; acc.oat += r.oat;
     acc.ppn += r.ppn; acc.pbbkb += r.pbbkb; acc.subtotal += r.subtotal;
     return acc;
-  }, { qty: 0, dpp: 0, oat: 0, ppn: 0, pbbkb: 0, subtotal: 0 }), [rows]);
+  }, { qty: 0, dpp: 0, oat: 0, ppn: 0, pbbkb: 0, subtotal: 0 }), [filteredRows]);
 
   const rateInput = (val, setter, placeholder) => (
     <input type="number" step="0.01" value={val} onChange={e => setter(e.target.value)}
@@ -167,6 +195,46 @@ export default function Invoicing({ role, user }) {
         <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>
           Delivered DOs with their 15°C received quantity. Set DPP &amp; OAT (Rp/L) and PBBKB (% of DPP)
           across several at once. PPN is {PPN_PCT}% of DPP+OAT. Control/record only — invoices are issued elsewhere.
+        </div>
+      </div>
+
+      {/* Filter bar */}
+      <div style={{ ...s.card, marginBottom: 16 }}>
+        <div style={{ fontSize: 10, color: T.textDim, letterSpacing: 1.5, marginBottom: 10 }}>
+          FILTERS {filteredRows.length !== rows.length && (
+            <span style={{ color: T.amber }}>· {filteredRows.length} of {rows.length} shown</span>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 14, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <div>
+            <label style={s.label}>Delivery Date — From</label>
+            <input type="date" value={fFrom} onChange={e => setFFrom(e.target.value)}
+              style={{ ...s.input, width: 150, fontSize: 11 }} />
+          </div>
+          <div>
+            <label style={s.label}>To</label>
+            <input type="date" value={fTo} onChange={e => setFTo(e.target.value)}
+              style={{ ...s.input, width: 150, fontSize: 11 }} />
+          </div>
+          <div>
+            <label style={s.label}>Company</label>
+            <select value={fClient} onChange={e => setFClient(e.target.value)}
+              style={{ ...s.input, width: 200, fontSize: 11 }}>
+              <option value="">— all —</option>
+              {clientOpts.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={s.label}>Vessel</label>
+            <select value={fVessel} onChange={e => setFVessel(e.target.value)}
+              style={{ ...s.input, width: 170, fontSize: 11 }}>
+              <option value="">— all —</option>
+              {vesselOpts.map(v => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </div>
+          {filtersActive && (
+            <button onClick={clearFilters} style={{ ...s.btn('ghost'), fontSize: 11 }}>CLEAR FILTERS</button>
+          )}
         </div>
       </div>
 
@@ -203,6 +271,11 @@ export default function Invoicing({ role, user }) {
         <div style={{ color: T.textDim, fontSize: 12 }}>Loading…</div>
       ) : rows.length === 0 ? (
         <div style={{ color: T.textFaint, fontSize: 12, padding: 20 }}>No delivered delivery orders yet.</div>
+      ) : filteredRows.length === 0 ? (
+        <div style={{ color: T.textFaint, fontSize: 12, padding: 20 }}>
+          No delivery orders match the current filters.{' '}
+          <span onClick={clearFilters} style={{ color: T.amber, cursor: 'pointer', textDecoration: 'underline' }}>Clear filters</span>
+        </div>
       ) : narrow ? (
         // -------- Mobile: stacked cards --------
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
