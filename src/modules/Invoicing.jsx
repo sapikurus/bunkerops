@@ -17,6 +17,16 @@ import { usePagination, PaginationBar, useIsNarrow, useSort, SortHeader } from '
 // Rates persist in bunkerops_invoices (one doc per DO id). This is control/record
 // only — actual invoices are generated in a separate app.
 
+// SO status labels for the filter dropdown (same vocabulary as Sales Requests).
+const SO_STATUS_LABELS = {
+  pending_approval: 'Pending approval',
+  requested:        'Requested',
+  do_issued:        'DO issued',
+  bast_done:        'BAST done',
+  reconciled:       'Reconciled',
+  cancelled:        'Cancelled',
+};
+
 // Money with 2 decimals, id-ID separators: "Rp 1.234.567,89".
 const fmtRp = (n) => 'Rp ' + (Number(n) || 0).toLocaleString('id-ID', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtL  = (n) => (Number(n) || 0).toLocaleString('id-ID');
@@ -93,6 +103,7 @@ export default function Invoicing({ role, user }) {
           brNo: d.brNo,
           cargo,
           soNumber: so.soNumber || d.soNumber || '',
+          soStatus: so.status || '',
           soDate: so.requestedDate || '',
           poRef: so.galleyPoRef || d.clientPoRef || '',
           bastDate: b?.tanggalBast || '',
@@ -120,6 +131,7 @@ export default function Invoicing({ role, user }) {
   const [fTo, setFTo]         = useState('');
   const [fClient, setFClient] = useState('');
   const [fVessel, setFVessel] = useState('');
+  const [fStatus, setFStatus] = useState('');
 
   // Distinct dropdown options from the current cargo's delivered rows.
   const clientOpts = useMemo(
@@ -128,20 +140,28 @@ export default function Invoicing({ role, user }) {
   const vesselOpts = useMemo(
     () => [...new Set(cargoRows.map(r => r.vessel).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
     [cargoRows]);
+  // SO-status options actually present in this cargo's rows, ordered by the
+  // canonical lifecycle so the dropdown reads BAST done / requested / DO issued etc.
+  const STATUS_ORDER = ['pending_approval', 'requested', 'do_issued', 'bast_done', 'reconciled', 'cancelled'];
+  const statusOpts = useMemo(() => {
+    const present = new Set(cargoRows.map(r => r.soStatus).filter(Boolean));
+    return STATUS_ORDER.filter(st => present.has(st));
+  }, [cargoRows]);
 
-  const filtersActive = fFrom || fTo || fClient || fVessel;
-  const clearFilters = () => { setFFrom(''); setFTo(''); setFClient(''); setFVessel(''); };
+  const filtersActive = fFrom || fTo || fClient || fVessel || fStatus;
+  const clearFilters = () => { setFFrom(''); setFTo(''); setFClient(''); setFVessel(''); setFStatus(''); };
 
-  // Apply filters (by BAST date range + exact company/vessel) before sort/paginate.
+  // Apply filters (by BAST date range + exact company/vessel/SO status) before sort/paginate.
   const filteredRows = useMemo(() => {
     return cargoRows.filter(r => {
       if (fFrom && (!r.bastDate || r.bastDate < fFrom)) return false;
       if (fTo   && (!r.bastDate || r.bastDate > fTo))   return false;
       if (fClient && r.client !== fClient) return false;
       if (fVessel && r.vessel !== fVessel) return false;
+      if (fStatus && r.soStatus !== fStatus) return false;
       return true;
     });
-  }, [cargoRows, fFrom, fTo, fClient, fVessel]);
+  }, [cargoRows, fFrom, fTo, fClient, fVessel, fStatus]);
 
   // Sortable columns.
   const sortCols = useMemo(() => ({
@@ -297,6 +317,16 @@ export default function Invoicing({ role, user }) {
               style={{ ...s.input, width: 170, fontSize: 11 }}>
               <option value="">— all —</option>
               {vesselOpts.map(v => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={s.label}>SO Status</label>
+            <select value={fStatus} onChange={e => setFStatus(e.target.value)}
+              style={{ ...s.input, width: 160, fontSize: 11 }}>
+              <option value="">— all —</option>
+              {statusOpts.map(st => (
+                <option key={st} value={st}>{SO_STATUS_LABELS[st] || st}</option>
+              ))}
             </select>
           </div>
           {filtersActive && (
