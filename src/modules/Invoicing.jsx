@@ -83,9 +83,15 @@ export default function Invoicing({ role, user }) {
         const qty = Number(b?.qty?.literStandard) || 0;   // 15°C received
         const money = compute(qty, iv.dppRate, iv.oatRate, iv.pbbkbRate);
         const priced = iv.dppRate != null && iv.dppRate !== '';
+        // Cargo type drives which commercial view applies. Scheme is the source of
+        // truth (PPS_SALE = PPS cargo; NON_PPS_SALE = MBSS cargo). Fall back to bucket.
+        const scheme = so.scheme || d.scheme || '';
+        const bucket = so.bucket || d.bucket || '';
+        const cargo = (scheme === 'NON_PPS_SALE' || bucket === 'MBSS') ? 'MBSS' : 'PPS';
         return {
           id: d.id,
           brNo: d.brNo,
+          cargo,
           soNumber: so.soNumber || d.soNumber || '',
           soDate: so.requestedDate || '',
           poRef: so.galleyPoRef || d.clientPoRef || '',
@@ -101,7 +107,13 @@ export default function Invoicing({ role, user }) {
           ...money,
         };
       });
-  }, [doC.data, bastByDO, invById]);
+  }, [doC.data, bastByDO, invById, soById]);
+
+  // ---- Cargo type: PPS (default) vs MBSS. MBSS gets a different layout later. --
+  const [cargo, setCargo] = useState('PPS');   // 'PPS' | 'MBSS'
+
+  // Rows for the active cargo type only.
+  const cargoRows = useMemo(() => rows.filter(r => r.cargo === cargo), [rows, cargo]);
 
   // ---- Filters: delivery (BAST) date range, company, vessel ----------------
   const [fFrom, setFFrom]     = useState('');
@@ -109,27 +121,27 @@ export default function Invoicing({ role, user }) {
   const [fClient, setFClient] = useState('');
   const [fVessel, setFVessel] = useState('');
 
-  // Distinct dropdown options from the current delivered rows.
+  // Distinct dropdown options from the current cargo's delivered rows.
   const clientOpts = useMemo(
-    () => [...new Set(rows.map(r => r.client).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
-    [rows]);
+    () => [...new Set(cargoRows.map(r => r.client).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+    [cargoRows]);
   const vesselOpts = useMemo(
-    () => [...new Set(rows.map(r => r.vessel).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
-    [rows]);
+    () => [...new Set(cargoRows.map(r => r.vessel).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+    [cargoRows]);
 
   const filtersActive = fFrom || fTo || fClient || fVessel;
   const clearFilters = () => { setFFrom(''); setFTo(''); setFClient(''); setFVessel(''); };
 
   // Apply filters (by BAST date range + exact company/vessel) before sort/paginate.
   const filteredRows = useMemo(() => {
-    return rows.filter(r => {
+    return cargoRows.filter(r => {
       if (fFrom && (!r.bastDate || r.bastDate < fFrom)) return false;
       if (fTo   && (!r.bastDate || r.bastDate > fTo))   return false;
       if (fClient && r.client !== fClient) return false;
       if (fVessel && r.vessel !== fVessel) return false;
       return true;
     });
-  }, [rows, fFrom, fTo, fClient, fVessel]);
+  }, [cargoRows, fFrom, fTo, fClient, fVessel]);
 
   // Sortable columns.
   const sortCols = useMemo(() => ({
@@ -212,11 +224,52 @@ export default function Invoicing({ role, user }) {
         </div>
       </div>
 
+      {/* Cargo-type toggle: PPS cargo (default) vs MBSS cargo */}
+      <div style={{ display: 'flex', gap: 0, marginBottom: 16,
+        border: `1px solid ${T.border}`, borderRadius: 4, overflow: 'hidden', width: 'fit-content' }}>
+        {[
+          { key: 'PPS',  label: 'PPS CARGO' },
+          { key: 'MBSS', label: 'MBSS CARGO' },
+        ].map(opt => {
+          const on = cargo === opt.key;
+          return (
+            <button key={opt.key}
+              onClick={() => { setCargo(opt.key); clearFilters(); setSel({}); }}
+              style={{
+                background: on ? T.amber : 'transparent',
+                color: on ? '#000' : T.textDim,
+                border: 'none', padding: '8px 18px', cursor: 'pointer',
+                fontSize: 11, fontWeight: on ? 700 : 400, letterSpacing: 1,
+                fontFamily: T.font }}>
+              {opt.label}
+              <span style={{ marginLeft: 8, opacity: 0.7 }}>
+                ({rows.filter(r => r.cargo === opt.key).length})
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {cargo === 'MBSS' ? (
+        // -------- MBSS cargo: layout TBD --------
+        <div style={{ ...s.card, padding: 28, textAlign: 'center' }}>
+          <div style={{ fontSize: 12, color: T.blue, letterSpacing: 1.5 }}>MBSS CARGO</div>
+          <div style={{ fontSize: 13, color: T.text, marginTop: 8 }}>
+            {cargoRows.length} delivered MBSS delivery order{cargoRows.length === 1 ? '' : 's'}.
+          </div>
+          <div style={{ fontSize: 12, color: T.textDim, marginTop: 6 }}>
+            MBSS cargo uses a different commercial layout — coming next. Switch back to{' '}
+            <span onClick={() => setCargo('PPS')} style={{ color: T.amber, cursor: 'pointer', textDecoration: 'underline' }}>PPS cargo</span>{' '}
+            for pricing control.
+          </div>
+        </div>
+      ) : (
+      <>
       {/* Filter bar */}
       <div style={{ ...s.card, marginBottom: 16 }}>
         <div style={{ fontSize: 10, color: T.textDim, letterSpacing: 1.5, marginBottom: 10 }}>
-          FILTERS {filteredRows.length !== rows.length && (
-            <span style={{ color: T.amber }}>· {filteredRows.length} of {rows.length} shown</span>
+          FILTERS {filteredRows.length !== cargoRows.length && (
+            <span style={{ color: T.amber }}>· {filteredRows.length} of {cargoRows.length} shown</span>
           )}
         </div>
         <div style={{ display: 'flex', gap: 14, alignItems: 'flex-end', flexWrap: 'wrap' }}>
@@ -283,8 +336,8 @@ export default function Invoicing({ role, user }) {
       {/* List */}
       {doC.loading || bastC.loading ? (
         <div style={{ color: T.textDim, fontSize: 12 }}>Loading…</div>
-      ) : rows.length === 0 ? (
-        <div style={{ color: T.textFaint, fontSize: 12, padding: 20 }}>No delivered delivery orders yet.</div>
+      ) : cargoRows.length === 0 ? (
+        <div style={{ color: T.textFaint, fontSize: 12, padding: 20 }}>No delivered PPS-cargo delivery orders yet.</div>
       ) : filteredRows.length === 0 ? (
         <div style={{ color: T.textFaint, fontSize: 12, padding: 20 }}>
           No delivery orders match the current filters.{' '}
@@ -398,6 +451,8 @@ export default function Invoicing({ role, user }) {
           </div>
           <PaginationBar {...pg} />
         </>
+      )}
+      </>
       )}
     </div>
   );
