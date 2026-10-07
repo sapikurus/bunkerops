@@ -35,6 +35,12 @@ export default function SalesRequests() {
   const [form, setForm]     = useState(null);
   const [editId, setEditId] = useState(null);
 
+  // Filters: requested-date range, client/entity, scheme.
+  const [fFrom, setFFrom]     = useState('');
+  const [fTo, setFTo]         = useState('');
+  const [fClient, setFClient] = useState('');
+  const [fScheme, setFScheme] = useState('');
+
   const narrow = useIsNarrow();
 
   const clients = clientsC.data;
@@ -53,6 +59,7 @@ export default function SalesRequests() {
   // Sortable columns — each maps a header key to a comparable value.
   const sortCols = useMemo(() => ({
     soNumber: r => r.soNumber || '',
+    poRef:    r => r.galleyPoRef || '',
     date:     r => r.requestedDate || '',
     client:   r => `${r.clientName || ''} ${r.entityName || ''}`,
     vessel:   r => r.vesselName || '',
@@ -62,15 +69,42 @@ export default function SalesRequests() {
     status:   r => STATUS_RANK[r.status] ?? 5,
   }), []);
 
+  // Client/entity dropdown options from the data (one entry per "Group — Entity").
+  const clientOpts = useMemo(() => {
+    const set = new Set();
+    for (const r of sr.data) {
+      const label = [r.clientName, r.entityName].filter(Boolean).join(' — ');
+      if (label) set.add(label);
+    }
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [sr.data]);
+
+  const filtersActive = fFrom || fTo || fClient || fScheme;
+  const clearFilters = () => { setFFrom(''); setFTo(''); setFClient(''); setFScheme(''); };
+
+  // Apply filters (requested-date range + client/entity + scheme) before sort.
+  const filteredRows = useMemo(() => {
+    return sr.data.filter(r => {
+      if (fFrom && (!r.requestedDate || r.requestedDate < fFrom)) return false;
+      if (fTo   && (!r.requestedDate || r.requestedDate > fTo))   return false;
+      if (fClient) {
+        const label = [r.clientName, r.entityName].filter(Boolean).join(' — ');
+        if (label !== fClient) return false;
+      }
+      if (fScheme && (r.scheme || 'PPS_SALE') !== fScheme) return false;
+      return true;
+    });
+  }, [sr.data, fFrom, fTo, fClient, fScheme]);
+
   // Default view: newest first. Cancelled rows always sink below active ones,
   // regardless of the chosen sort, so they read as "done/closed".
   const baseRows = useMemo(() => {
-    return [...sr.data].sort((a, b) => {
+    return [...filteredRows].sort((a, b) => {
       const d = String(b.requestedDate || '').localeCompare(String(a.requestedDate || ''));
       if (d !== 0) return d;
       return String(b.soNumber || '').localeCompare(String(a.soNumber || ''));
     });
-  }, [sr.data]);
+  }, [filteredRows]);
 
   const { sorted: userSorted, sortKey, sortDir, toggle } = useSort(baseRows, sortCols);
   // Keep cancelled at the bottom on top of whatever sort is active.
@@ -201,6 +235,48 @@ export default function SalesRequests() {
         {!form && <button onClick={startNew} style={s.btn('primary')}>+ NEW SALES ORDER</button>}
       </div>
 
+      {/* Filter bar: date range, client/entity, scheme */}
+      {!form && (
+        <div style={{ ...s.card, marginBottom: 20 }}>
+          <div style={{ fontSize: 10, color: T.textDim, letterSpacing: 1.5, marginBottom: 10 }}>
+            FILTERS {filteredRows.length !== sr.data.length && (
+              <span style={{ color: T.amber }}>· {filteredRows.length} of {sr.data.length} shown</span>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 14, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+            <div>
+              <label style={s.label}>Date — From</label>
+              <input type="date" value={fFrom} onChange={e => setFFrom(e.target.value)}
+                style={{ ...s.input, width: 150, fontSize: 11 }} />
+            </div>
+            <div>
+              <label style={s.label}>To</label>
+              <input type="date" value={fTo} onChange={e => setFTo(e.target.value)}
+                style={{ ...s.input, width: 150, fontSize: 11 }} />
+            </div>
+            <div>
+              <label style={s.label}>Client / Entity</label>
+              <select value={fClient} onChange={e => setFClient(e.target.value)}
+                style={{ ...s.input, width: 240, fontSize: 11 }}>
+                <option value="">— all —</option>
+                {clientOpts.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={s.label}>Scheme</label>
+              <select value={fScheme} onChange={e => setFScheme(e.target.value)}
+                style={{ ...s.input, width: 220, fontSize: 11 }}>
+                <option value="">— all —</option>
+                {Object.values(SCHEMES).map(sc => <option key={sc.key} value={sc.key}>{sc.label}</option>)}
+              </select>
+            </div>
+            {filtersActive && (
+              <button onClick={clearFilters} style={{ ...s.btn('ghost'), fontSize: 11 }}>CLEAR FILTERS</button>
+            )}
+          </div>
+        </div>
+      )}
+
       {form && (
         <div style={{ ...s.card, marginBottom: 20 }}>
           <div style={{ fontSize: 11, color: T.amber, letterSpacing: 1, marginBottom: 14 }}>
@@ -324,6 +400,11 @@ export default function SalesRequests() {
         <div style={{ color: T.textDim, fontSize: 12 }}>Loading…</div>
       ) : sr.data.length === 0 ? (
         <div style={{ color: T.textFaint, fontSize: 12, padding: 20 }}>No sales orders yet.</div>
+      ) : filteredRows.length === 0 ? (
+        <div style={{ color: T.textFaint, fontSize: 12, padding: 20 }}>
+          No sales orders match the current filters.{' '}
+          <span onClick={clearFilters} style={{ color: T.amber, cursor: 'pointer', textDecoration: 'underline' }}>Clear filters</span>
+        </div>
       ) : narrow ? (
         // -------- Mobile: stacked cards --------
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -333,6 +414,7 @@ export default function SalesRequests() {
                 <span style={{ fontFamily: T.font, color: T.amber, fontSize: 11 }}>{r.soNumber || '—'}</span>
                 <StatusPill status={r.status} color={statusColor(r.status)} />
               </div>
+              <div style={{ fontSize: 10, color: T.textFaint, marginBottom: 4 }}>PO {r.galleyPoRef || '—'}</div>
               <div style={{ fontSize: 13, color: T.text }}>{r.clientName}</div>
               <div style={{ fontSize: 11, color: T.textDim, marginBottom: 6 }}>{r.entityName}</div>
               <div style={{ fontSize: 11, color: T.textDim, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
@@ -367,6 +449,7 @@ export default function SalesRequests() {
             <thead>
               <tr>
                 <SortHeader label="SO NUMBER" colKey="soNumber" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <SortHeader label="PO REF" colKey="poRef" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
                 <SortHeader label="DATE" colKey="date" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
                 <SortHeader label="CLIENT / ENTITY" colKey="client" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
                 <SortHeader label="VESSEL" colKey="vessel" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
@@ -387,6 +470,7 @@ export default function SalesRequests() {
                         style={{ color: T.amber, marginLeft: 6 }}>⚠</span>
                     )}
                   </td>
+                  <td style={{ ...s.td, fontSize: 10 }}>{r.galleyPoRef || '—'}</td>
                   <td style={s.td}>{r.requestedDate}</td>
                   <td style={s.td}>
                     <div>{r.clientName}</div>
