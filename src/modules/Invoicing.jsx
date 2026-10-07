@@ -36,6 +36,7 @@ function compute(qty, dppRate, oatRate, pbbkbRate) {
 export default function Invoicing({ role, user }) {
   const doC   = useCollection(COL.deliveryOrders);
   const bastC = useCollection(COL.bast);
+  const srC   = useCollection(COL.salesRequests);
   const invC  = useCollection(COL.invoices);
 
   const narrow = useIsNarrow();
@@ -64,6 +65,13 @@ export default function Invoicing({ role, user }) {
     return m;
   }, [invC.data]);
 
+  // Parent SO by id (for SO number, PO ref, SO date on each row).
+  const soById = useMemo(() => {
+    const m = {};
+    for (const r of srC.data) m[r.id] = r;
+    return m;
+  }, [srC.data]);
+
   // Build the billable rows: delivered, non-cancelled DOs, joined to BAST + invoice.
   const rows = useMemo(() => {
     return doC.data
@@ -71,12 +79,16 @@ export default function Invoicing({ role, user }) {
       .map(d => {
         const b = bastByDO[d.id];
         const iv = invById[d.id] || {};
+        const so = soById[d.salesRequestId] || {};
         const qty = Number(b?.qty?.literStandard) || 0;   // 15°C received
         const money = compute(qty, iv.dppRate, iv.oatRate, iv.pbbkbRate);
         const priced = iv.dppRate != null && iv.dppRate !== '';
         return {
           id: d.id,
           brNo: d.brNo,
+          soNumber: so.soNumber || d.soNumber || '',
+          soDate: so.requestedDate || '',
+          poRef: so.galleyPoRef || d.clientPoRef || '',
           bastDate: b?.tanggalBast || '',
           client: d.deliverTo || '',
           vessel: d.vesselName || '',
@@ -121,7 +133,9 @@ export default function Invoicing({ role, user }) {
 
   // Sortable columns.
   const sortCols = useMemo(() => ({
-    brNo:     r => r.brNo || '',
+    soNumber: r => r.soNumber || '',
+    poRef:    r => r.poRef || '',
+    soDate:   r => r.soDate || '',
     bastDate: r => r.bastDate || '',
     client:   r => r.client || '',
     vessel:   r => r.vessel || '',
@@ -285,11 +299,14 @@ export default function Invoicing({ role, user }) {
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <input type="checkbox" checked={!!sel[r.id]} disabled={!r.hasBast || !canWrite}
                     onChange={() => toggleOne(r.id)} />
-                  <span style={{ fontFamily: T.font, color: T.amber, fontSize: 11 }}>{r.brNo}</span>
+                  <span style={{ fontFamily: T.font, color: T.amber, fontSize: 11 }}>{r.soNumber || '—'}</span>
                 </label>
                 <span style={{ fontSize: 10, color: r.priced ? T.green : T.textFaint }}>
                   {r.priced ? 'priced' : 'not priced'}
                 </span>
+              </div>
+              <div style={{ fontSize: 10, color: T.textFaint, marginTop: 2 }}>
+                PO {r.poRef || '—'} · SO {r.soDate || '—'}
               </div>
               <div style={{ fontSize: 13, color: T.text, marginTop: 4 }}>{r.client}</div>
               <div style={{ fontSize: 11, color: T.textDim, display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
@@ -320,7 +337,9 @@ export default function Invoicing({ role, user }) {
                   <th style={{ ...s.th, width: 28 }}>
                     <input type="checkbox" checked={allSelected} onChange={toggleAll} disabled={!canWrite} />
                   </th>
-                  <SortHeader label="DO NUMBER" colKey="brNo" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                  <SortHeader label="SO NUMBER" colKey="soNumber" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                  <SortHeader label="PO REF" colKey="poRef" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                  <SortHeader label="SO DATE" colKey="soDate" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
                   <SortHeader label="BAST DATE" colKey="bastDate" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
                   <SortHeader label="CLIENT" colKey="client" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
                   <SortHeader label="VESSEL" colKey="vessel" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
@@ -340,7 +359,9 @@ export default function Invoicing({ role, user }) {
                       <input type="checkbox" checked={!!sel[r.id]} disabled={!r.hasBast || !canWrite}
                         onChange={() => toggleOne(r.id)} />
                     </td>
-                    <td style={{ ...s.td, fontFamily: T.font, color: T.amber, fontSize: 10 }}>{r.brNo}</td>
+                    <td style={{ ...s.td, fontFamily: T.font, color: T.amber, fontSize: 10 }}>{r.soNumber || '—'}</td>
+                    <td style={{ ...s.td, fontSize: 10 }}>{r.poRef || '—'}</td>
+                    <td style={s.td}>{r.soDate || '—'}</td>
                     <td style={s.td}>{r.bastDate || '—'}</td>
                     <td style={s.td}>{r.client}</td>
                     <td style={s.td}>{r.vessel || '—'}</td>
@@ -363,7 +384,7 @@ export default function Invoicing({ role, user }) {
               <tfoot>
                 <tr style={{ borderTop: `2px solid ${T.border}` }}>
                   <td style={s.td}></td>
-                  <td style={{ ...s.td, fontSize: 10, color: T.textDim, letterSpacing: 1 }} colSpan={4}>GRAND TOTAL (all delivered)</td>
+                  <td style={{ ...s.td, fontSize: 10, color: T.textDim, letterSpacing: 1 }} colSpan={6}>GRAND TOTAL (filtered)</td>
                   <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font }}>{fmtL(totals.qty)}</td>
                   <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font, fontSize: 10 }}>{fmtRp(totals.dpp)}</td>
                   <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font, fontSize: 10 }}>{fmtRp(totals.oat)}</td>
