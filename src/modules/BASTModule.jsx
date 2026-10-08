@@ -86,7 +86,7 @@ export default function BASTModule({ role }) {
     client:    b => b.recipient?.entityName || '',
     vessel:    b => b.recipient?.vesselName || '',
     doRef:     b => b.supplier?.deliveryOrder || '',
-    received:  b => Number(b.qty?.literStandard) || 0,
+    received:  b => Number(b.qty?.volumeObserved ?? b.qty?.literStandard) || 0,
     loss:      b => Number(b.transitLossL) || 0,
   }), []);
   const { sorted: sortedBASTs, sortKey, sortDir, toggle } = useSort(completedBASTs, sortCols);
@@ -121,8 +121,10 @@ export default function BASTModule({ role }) {
     return next;
   });
 
+  // Received volume is now the observed liters (no @15°C correction).
+  // Transit loss = dispatched − observed received.
   const transitLoss = form
-    ? (Number(form.dispatchedVolumeL) || 0) - (Number(form.qty.literStandard) || 0)
+    ? (Number(form.dispatchedVolumeL) || 0) - (Number(form.qty.volumeObserved) || 0)
     : 0;
 
   // Pull the BAST's inherited fields back in line with its DO.
@@ -159,7 +161,7 @@ export default function BASTModule({ role }) {
 
   const save = async () => {
     if (busy) return;
-    if (!form.qty.literStandard) { alert('Liter Standard (@15°C) is required.'); return; }
+    if (!form.qty.volumeObserved) { alert('Volume Observed (liter) is required.'); return; }
     setBusy(true);
     try {
       const d = new Date(form.tanggalBast);
@@ -399,23 +401,18 @@ export default function BASTModule({ role }) {
 
           {/* Quantity block */}
           <div style={{ fontSize: 10, color: T.textDim, letterSpacing: 1.5, marginBottom: 8 }}>QUANTITY</div>
-          <div style={{ display: 'grid', gridTemplateColumns: narrow ? '1fr 1fr' : '1fr 1fr 1fr 1fr', gap: 10, marginBottom: 8 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: narrow ? '1fr' : '1fr 1fr 1fr', gap: 10, marginBottom: 8 }}>
             <div>
-              <label style={s.label}>Volume Observed</label>
+              <label style={s.label}>Volume Observed / Received (R)</label>
               <VolumeInput value={form.qty.volumeObserved}
-                onChange={v => setNested('qty.volumeObserved', v)} placeholder="observed vol" />
-            </div>
-            <div>
-              <label style={s.label}>Liter Standard @15°C (R)</label>
-              <VolumeInput value={form.qty.literStandard}
-                onChange={v => setNested('qty.literStandard', v)} placeholder="corrected vol" />
+                onChange={v => setNested('qty.volumeObserved', v)} placeholder="observed liter" />
             </div>
             <div>
               <label style={s.label}>Dispatched (D)</label>
               <input style={{ ...s.input, opacity: .6 }} value={fmtL(form.dispatchedVolumeL)} disabled />
             </div>
             <div>
-              <label style={s.label}>Transit Loss (D−R std)</label>
+              <label style={s.label}>Transit Loss (D−R obs)</label>
               <input style={{ ...s.input, opacity: .8, color: transitLoss > 0 ? T.red : T.text }}
                 value={fmtL(transitLoss)} disabled />
             </div>
@@ -523,7 +520,7 @@ export default function BASTModule({ role }) {
                   <span style={{ fontFamily: T.font }}>· DO {b.supplier?.deliveryOrder || '—'}</span>
                 </div>
                 <div style={{ fontSize: 11, color: T.textDim, display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
-                  <span>Received: <span style={{ fontFamily: T.font, color: T.text }}>{b.status === 'blank' ? '—' : fmtL(b.qty?.literStandard)}</span></span>
+                  <span>Received: <span style={{ fontFamily: T.font, color: T.text }}>{b.status === 'blank' ? '—' : fmtL(b.qty?.volumeObserved ?? b.qty?.literStandard)}</span></span>
                   <span style={{ color: b.transitLossL > 0 ? T.red : T.textDim }}>
                     · Loss: <span style={{ fontFamily: T.font }}>{b.status === 'blank' ? '—' : fmtL(b.transitLossL)}</span>
                   </span>
@@ -588,7 +585,7 @@ export default function BASTModule({ role }) {
                       <StatusPill {...bastPill(b)} />
                     </td>
                     <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font }}>
-                      {b.status === 'blank' ? '—' : fmtL(b.qty?.literStandard)}
+                      {b.status === 'blank' ? '—' : fmtL(b.qty?.volumeObserved ?? b.qty?.literStandard)}
                     </td>
                     <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font, color: b.transitLossL > 0 ? T.red : T.text }}>
                       {b.status === 'blank' ? '—' : fmtL(b.transitLossL)}

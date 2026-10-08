@@ -6,7 +6,7 @@ import { canCommercial } from '../roles';
 import { usePagination, PaginationBar, useIsNarrow, useSort, SortHeader, StatusPill } from './listUtils';
 
 // Commercial pricing-control module. Lists DELIVERED (non-cancelled) DOs with the
-// 15°C received quantity from their BAST, and lets commercial/director/superadmin
+// observed-liter received quantity from their BAST, and lets commercial/director/superadmin
 // set per-litre DPP & OAT rates (+ a PBBKB % of DPP, 0 for now) across several
 // DOs at once. Amounts compute live:
 //   DPP      = dppRate × qty
@@ -66,7 +66,7 @@ export default function Invoicing({ role, user }) {
   const [pbbkbRate, setPbbkbRate] = useState('');
   const [busy, setBusy]         = useState(false);
 
-  // BAST (filled) by deliveryOrderId → gives 15°C qty + bast date.
+  // BAST (filled) by deliveryOrderId → gives observed qty + bast date.
   const bastByDO = useMemo(() => {
     const m = {};
     for (const b of bastC.data) {
@@ -95,7 +95,7 @@ export default function Invoicing({ role, user }) {
   // Build the rows SO-first: every non-cancelled SO is a row (so the full
   // lifecycle — requested, DO issued, BAST done — shows and is sortable by
   // status, like the Sales Orders submenu). DO / BAST / invoice rates attach
-  // when they exist; pricing columns stay blank until a BAST gives a 15°C qty.
+  // when they exist; pricing columns stay blank until a BAST gives an observed qty.
   const rows = useMemo(() => {
     return srC.data
       .filter(so => so.status !== 'cancelled')
@@ -103,7 +103,7 @@ export default function Invoicing({ role, user }) {
         const d = doBySO[so.id] || null;
         const b = d ? bastByDO[d.id] : null;
         const iv = d ? (invById[d.id] || {}) : {};
-        const qty = Number(b?.qty?.literStandard) || 0;   // 15°C received
+        const qty = Number(b?.qty?.volumeObserved ?? b?.qty?.literStandard) || 0;   // observed liters received
         const money = compute(qty, iv.dppRate, iv.oatRate, iv.pbbkbRate);
         const priced = iv.dppRate != null && iv.dppRate !== '';
         // Cargo type drives which commercial view applies. Scheme is the source of
@@ -202,7 +202,7 @@ export default function Invoicing({ role, user }) {
   const { sorted, sortKey, sortDir, toggle } = useSort(baseRows, sortCols);
   const pg = usePagination(sorted, 20);
 
-  // Only rows that have a BAST (hence a DO + 15°C qty) can be priced/selected.
+  // Only rows that have a BAST (hence a DO + observed qty) can be priced/selected.
   // Selection is keyed by the SO row id; the DO id is what pricing writes against.
   const selectableIds = sorted.filter(r => r.hasBast && r.doId).map(r => r.id);
   const selectedIds = Object.keys(sel).filter(id => sel[id]);
@@ -263,7 +263,7 @@ export default function Invoicing({ role, user }) {
       <div style={{ marginBottom: 20 }}>
         <div style={{ fontSize: 11, color: T.amber, letterSpacing: 1.5 }}>COMMERCIAL — PRICING CONTROL</div>
         <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>
-          All sales orders with their live status; pricing opens once a BAST gives a 15°C quantity.
+          All sales orders with their live status; pricing opens once a BAST gives an observed-liter quantity.
           Set DPP &amp; OAT (Rp/L) and PBBKB (% of DPP) across several at once. PPN is {PPN_PCT}% of DPP+OAT.
           Control/record only — invoices are issued elsewhere.
         </div>
@@ -452,7 +452,7 @@ export default function Invoicing({ role, user }) {
                   <SortHeader label="CLIENT" colKey="client" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
                   <SortHeader label="VESSEL" colKey="vessel" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
                   <SortHeader label="STATUS" colKey="status" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
-                  <SortHeader label="QTY 15°C (L)" colKey="qty" sortKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
+                  <SortHeader label="QTY OBS (L)" colKey="qty" sortKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
                   <th style={{ ...s.th, textAlign: 'right' }}>DPP</th>
                   <th style={{ ...s.th, textAlign: 'right' }}>OAT</th>
                   <th style={{ ...s.th, textAlign: 'right' }}>PPN</th>
