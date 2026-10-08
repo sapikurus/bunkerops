@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { T, s } from '../tokens';
 import { COL, BUCKETS, TOLERANCE_PCT, ISSUERS, NODES, ROMAN, formatSppNumber } from '../config';
 import { useCollection } from './useCollection';
@@ -8,6 +8,7 @@ import { useFuelOpsMaster } from './useFuelOpsMaster';
 import VolumeInput from './VolumeInput';
 import { buildCargoDOHtml } from './cargoDoGen';
 import { PPS_LOGO } from './assets';
+import { scanIncomingReport, SCAN_ACCEPT } from './scanIncoming';
 
 // Open an HTML string in a new window and trigger print (matches DO/BAST flow).
 function openPrint(html) {
@@ -37,17 +38,36 @@ const prevPeriod = (year, month) =>
   month === 1 ? { year: year - 1, month: 12 } : { year, month: month - 1 };
 
 // All computed figures for a card. Full precision; round only at display.
+// Observed received liters for an incoming row: the Actual-Received point's
+// observed figure, falling back to the legacy flat volumeL for old records.
+const rowReceivedObs = (r) =>
+  Number(r?.load?.actual?.obs ?? r?.volumeL) || 0;
+
+// Ensure a row has the 4-point `load` structure. Legacy rows (flat volumeL,
+// no load) get an empty structure with their old volume mapped onto actual.obs.
+const emptyPoint = () => ({ obs: '', l15: '', density: '', temp: '' });
+function normalizeIncoming(r) {
+  if (r.load && r.load.bl && r.load.actual) return r;
+  return {
+    ...r,
+    load: {
+      bl:     emptyPoint(),
+      sfal:   emptyPoint(),
+      sfbd:   emptyPoint(),
+      actual: { ...emptyPoint(), obs: r.volumeL ?? '' },
+    },
+  };
+}
+
 function computeCard({ openingROB, incoming, dispatched, measuredROB }) {
-  const totalC = (incoming || []).reduce((a, r) => a + (Number(r.volumeL) || 0), 0);
+  const totalC = (incoming || []).reduce((a, r) => a + rowReceivedObs(r), 0);
   const totalD = (dispatched || []).reduce((a, r) => a + (Number(r.dispatchedL) || 0), 0);
   const bookROB = (Number(openingROB) || 0) + totalC - totalD;
   const hasMeasured = measuredROB != null && measuredROB !== '';
   const storageLoss = hasMeasured ? bookROB - Number(measuredROB) : null;
   const toleranceAllowance = (TOLERANCE_PCT / 100) * totalC; // 0.3% -> 0.003 * ΣC
   const excessLoss = storageLoss == null ? null : Math.max(0, storageLoss - toleranceAllowance);
-  const totalVhsFee = (incoming || [])
-    .reduce((a, r) => a + (Number(r.volumeL) || 0) * (Number(r.vhsRatePerL) || 0), 0);
-  return { totalC, totalD, bookROB, storageLoss, toleranceAllowance, excessLoss, totalVhsFee };
+  return { totalC, totalD, bookROB, storageLoss, toleranceAllowance, excessLoss };
 }
 
 export default function StockCards({ role, user }) {
@@ -96,7 +116,8 @@ export default function StockCards({ role, user }) {
     if (stored) {
       setDraft({
         openingROB:       stored.openingROB ?? 0,
-        incoming:         stored.incoming ? JSON.parse(JSON.stringify(stored.incoming)) : [],
+        incoming:         (stored.incoming ? JSON.parse(JSON.stringify(stored.incoming)) : [])
+                            .map(r => normalizeIncoming(r)),
         dispatched:       stored.dispatched ? JSON.parse(JSON.stringify(stored.dispatched)) : [],
         measuredROB:      stored.measuredROB ?? '',
         compensationValue: stored.compensationValue ?? '',
@@ -129,9 +150,20 @@ export default function StockCards({ role, user }) {
 
   // ---- Incoming (manual) ---------------------------------------------------
   // TODO: later this links to a FuelOps incoming-cargo feed. Manual entry for now.
+  // Each incoming cargo now carries 4 loading points (surveyor figures):
+  //   bl    — B/L (shore / loading figure)
+  //   sfal  — Ship Figure After Loading (R1)
+  //   sfbd  — Ship Figure Before Discharging (R2)
+  //   actual— Actual Received (final figure at destination)
+  // Each point holds observed liters (mandatory), liter@15°C, density, temp.
+  // R4 = Actual Received − B/L is computed, not stored.
+  const blankPoint = () => ({ obs: '', l15: '', density: '', temp: '' });
   const addIncoming = () => patch({
     incoming: [...draft.incoming, {
-      id: uid(), date: todayISO(), cargoRef: '', volumeL: '', vhsRatePerL: '', notes: '',
+      id: uid(), date: todayISO(), cargoRef: '', notes: '',
+      load: { bl: blankPoint(), sfal: blankPoint(), sfbd: blankPoint(), actual: blankPoint() },
+      // Mirror of actual.obs — keeps ΣC / permit quantity working for legacy readers.
+      volumeL: '',
       // Optional permit-DO fields (for the port-authority bunker permit printout).
       permit: null,
     }],
@@ -139,7 +171,68 @@ export default function StockCards({ role, user }) {
   const setIncoming = (id, field, v) => patch({
     incoming: draft.incoming.map(r => r.id === id ? { ...r, [field]: v } : r),
   });
+  // Set one figure of one loading point; keep volumeL mirrored to actual.obs.
+  const setLoadPoint = (id, point, field, v) => patch({
+    incoming: draft.incoming.map(r => {
+      if (r.id !== id) return r;
+      const load = { ...(r.load || {}), [point]: { ...(r.load?.[point] || {}), [field]: v } };
+      const next = { ...r, load };
+      if (point === 'actual' && field === 'obs') next.volumeL = v;  // keep ΣC in sync
+      return next;
+    }),
+  });
   const delIncoming = (id) => patch({ incoming: draft.incoming.filter(r => r.id !== id) });
+
+  // R4 difference (Actual Received − B/L) for a row, per observed & @15°C.
+  const r4Of = (r) => {
+    const a = r.load?.actual || {}, b = r.load?.bl || {};
+    const diff = (x, y) => (x === '' || x == null || y === '' || y == null)
+      ? null : (Number(x) || 0) - (Number(y) || 0);
+    return { obs: diff(a.obs, b.obs), l15: diff(a.l15, b.l15) };
+  };
+
+  // ---- Scan report → autofill a new incoming cargo row ----------------------
+  // Reads a scanned surveyor report (jpg/png/pdf) with Gemini and fills the 4
+  // loading points of a NEW cargo row as an editable draft. The scan is sent to
+  // Gemini and discarded — never stored. User reviews/corrects, then SAVEs.
+  const scanInputRef = useRef(null);
+  const [scanBusy, setScanBusy] = useState(false);
+  const [scanMsg, setScanMsg]   = useState('');
+
+  const onScanFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';                 // allow re-selecting the same file later
+    if (!file) return;
+    setScanMsg(''); setScanBusy(true);
+    try {
+      const data = await scanIncomingReport(file);
+      const nonEmpty = (p) => p && (p.obs !== '' || p.l15 !== '' || p.density !== '' || p.temp !== '');
+      const found = ['bl', 'sfal', 'sfbd', 'actual'].filter(k => nonEmpty(data[k]));
+      if (found.length === 0) {
+        setScanMsg('Could not read any figures from that scan. Add the row manually, or try a clearer image.');
+        return;
+      }
+      // Create a new row seeded with the extracted figures (editable).
+      const row = {
+        id: uid(), date: todayISO(), cargoRef: '', notes: '',
+        load: {
+          bl:     { ...blankPoint(), ...data.bl },
+          sfal:   { ...blankPoint(), ...data.sfal },
+          sfbd:   { ...blankPoint(), ...data.sfbd },
+          actual: { ...blankPoint(), ...data.actual },
+        },
+        volumeL: data.actual?.obs ?? '',
+        permit: null,
+        _fromScan: true,
+      };
+      patch({ incoming: [...draft.incoming, row] });
+      setScanMsg(`Scan read — filled ${found.length} of 4 loading point(s). Review the figures and SAVE.`);
+    } catch (err) {
+      setScanMsg(err.message || 'Scan failed.');
+    } finally {
+      setScanBusy(false);
+    }
+  };
 
   // ---- Permit DO / SPP (incoming-cargo → port-authority bunker permit) ------
   // Which incoming row currently has its permit editor open (id or null).
@@ -262,13 +355,24 @@ export default function StockCards({ role, user }) {
     periodMonth: Number(sel.month),
     periodLabel: `${MONTHS_ID[sel.month - 1]} ${sel.year}`,
     openingROB: Number(draft.openingROB) || 0,
-    incoming: draft.incoming.map(r => ({
-      id: r.id, date: r.date, cargoRef: r.cargoRef,
-      volumeL: Number(r.volumeL) || 0, vhsRatePerL: Number(r.vhsRatePerL) || 0, notes: r.notes,
-      // Persist permit-DO fields when present, so the document can be reprinted.
-      // (useCollection strips undefined; null is fine for "never set".)
-      permit: r.permit || null,
-    })),
+    incoming: draft.incoming.map(r => {
+      // Normalize each loading point's figures to numbers (blank → null).
+      const pt = (p) => {
+        const src = r.load?.[p] || {};
+        const num = (x) => (x === '' || x == null) ? null : (Number(x) || 0);
+        return { obs: num(src.obs), l15: num(src.l15), density: num(src.density), temp: num(src.temp) };
+      };
+      const load = { bl: pt('bl'), sfal: pt('sfal'), sfbd: pt('sfbd'), actual: pt('actual') };
+      return {
+        id: r.id, date: r.date, cargoRef: r.cargoRef, notes: r.notes,
+        load,
+        // volumeL mirrors the actual-received observed figure (the ΣC input).
+        volumeL: load.actual.obs ?? (Number(r.volumeL) || 0),
+        // Persist permit-DO fields when present, so the document can be reprinted.
+        // (useCollection strips undefined; null is fine for "never set".)
+        permit: r.permit || null,
+      };
+    }),
     dispatched: draft.dispatched,
     measuredROB: (draft.measuredROB === '' || draft.measuredROB == null) ? null : Number(draft.measuredROB),
     compensationValue: (draft.compensationValue === '' || draft.compensationValue == null) ? null : Number(draft.compensationValue),
@@ -316,9 +420,128 @@ export default function StockCards({ role, user }) {
     await persist({ status: 'locked' });
   };
 
+  // One loading point's editor: observed (mandatory) + L15 + density + temp.
+  const loadPointEditor = (r, key, label, note) => {
+    const p = r.load?.[key] || {};
+    return (
+      <div style={{ border: `1px solid ${T.border}`, borderRadius: 4, padding: 10 }}>
+        <div style={{ fontSize: 10, color: T.amber, letterSpacing: 1, marginBottom: 2 }}>{label}</div>
+        {note && <div style={{ fontSize: 9, color: T.textFaint, marginBottom: 6 }}>{note}</div>}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+          <div>
+            <label style={{ ...s.label, fontSize: 9 }}>Observed (L) *</label>
+            {editable
+              ? <VolumeInput value={p.obs} onChange={v => setLoadPoint(r.id, key, 'obs', v)} placeholder="obs" />
+              : <div style={{ fontFamily: T.font, fontSize: 12 }}>{fmtL(p.obs)}</div>}
+          </div>
+          <div>
+            <label style={{ ...s.label, fontSize: 9 }}>Liter @15°C</label>
+            {editable
+              ? <VolumeInput value={p.l15} onChange={v => setLoadPoint(r.id, key, 'l15', v)} placeholder="L15" />
+              : <div style={{ fontFamily: T.font, fontSize: 12 }}>{p.l15 == null || p.l15 === '' ? '—' : fmtL(p.l15)}</div>}
+          </div>
+          <div>
+            <label style={{ ...s.label, fontSize: 9 }}>Density</label>
+            {editable
+              ? <input style={{ ...s.input, fontSize: 11 }} value={p.density ?? ''} onChange={e => setLoadPoint(r.id, key, 'density', e.target.value)} placeholder="0.8540" />
+              : <div style={{ fontFamily: T.font, fontSize: 12 }}>{p.density == null || p.density === '' ? '—' : p.density}</div>}
+          </div>
+          <div>
+            <label style={{ ...s.label, fontSize: 9 }}>Temp (°C)</label>
+            {editable
+              ? <input style={{ ...s.input, fontSize: 11 }} value={p.temp ?? ''} onChange={e => setLoadPoint(r.id, key, 'temp', e.target.value)} placeholder="28" />
+              : <div style={{ fontFamily: T.font, fontSize: 12 }}>{p.temp == null || p.temp === '' ? '—' : p.temp}</div>}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // The SPP / permit-DO editor panel for one incoming row (shown when open).
+  const permitEditor = (r) => (
+    <div style={{ background: T.amberGlow, padding: 14, borderTop: `2px solid ${T.amber}`, borderRadius: 4, marginTop: 10 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+        <div style={{ fontSize: 10, color: T.amber, letterSpacing: 1.5 }}>
+          SPP — SURAT PENGANTAR PENGIRIMAN · for port-authority bunker permit
+          {r.permit?.sppNo && (
+            <span style={{ color: T.text, fontFamily: T.font, marginLeft: 8 }}>{r.permit.sppNo}</span>
+          )}
+        </div>
+        <button onClick={() => setPermitOpen(null)}
+          style={{ ...s.btn('ghost'), padding: '2px 10px', fontSize: 10 }}>CLOSE</button>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+        <Field label="Est. Delivery Date">
+          <input style={s.input} type="date" value={r.permit?.estDeliveryDate || ''} disabled={!editable}
+            onChange={e => setPermitField(r.id, 'estDeliveryDate', e.target.value)} />
+        </Field>
+        <Field label="Cargo Item / Fuel Type">
+          {ftError ? (
+            <input style={s.input} value={r.permit?.product || ''} disabled={!editable}
+              onChange={e => setPermitField(r.id, 'product', e.target.value)}
+              placeholder="type fuel (FuelOps unavailable)" />
+          ) : (
+            <select style={s.input} value={r.permit?.fuelTypeId || ''} disabled={!editable}
+              onChange={e => setPermitFuel(r.id, e.target.value)}>
+              <option value="">— select fuel —</option>
+              {fuelTypes.map(ft => <option key={ft.id} value={ft.id}>{ft.name}</option>)}
+            </select>
+          )}
+        </Field>
+        <Field label="Quantity (L)">
+          <VolumeInput value={r.permit?.quantityL ?? ''} disabled={!editable}
+            onChange={v => setPermitField(r.id, 'quantityL', v)} placeholder="200.000" />
+        </Field>
+        <Field label="Port Loading">
+          <input style={s.input} value={r.permit?.portLoading || ''} disabled={!editable}
+            onChange={e => setPermitField(r.id, 'portLoading', e.target.value)}
+            placeholder="load port" />
+        </Field>
+        <Field label="Port Destination">
+          <select style={s.input} value={r.permit?.portDestination || ''} disabled={!editable}
+            onChange={e => setPermitField(r.id, 'portDestination', e.target.value)}>
+            <option value="">— select node —</option>
+            {nodesC.data.map(n => <option key={n.id} value={n.name}>{n.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Supply Vessel">
+          <input style={s.input} value={r.permit?.supplyVessel || ''} disabled={!editable}
+            onChange={e => setPermitField(r.id, 'supplyVessel', e.target.value)}
+            placeholder="e.g. SPOB Berkat Anugerah 06" />
+        </Field>
+        <Field label="Reference Number (PO / cargo ref)">
+          <input style={s.input} value={r.permit?.referenceNo || ''} disabled={!editable}
+            onChange={e => setPermitField(r.id, 'referenceNo', e.target.value)}
+            placeholder="PO number" />
+        </Field>
+        <Field label="Recipient Name">
+          <input style={s.input} value={r.permit?.recipientName || ''} disabled={!editable}
+            onChange={e => setPermitField(r.id, 'recipientName', e.target.value)}
+            placeholder="signer name" />
+        </Field>
+        <Field label="Note (optional)">
+          <input style={s.input} value={r.permit?.note || ''} disabled={!editable}
+            onChange={e => setPermitField(r.id, 'note', e.target.value)} />
+        </Field>
+      </div>
+      <div style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'center' }}>
+        <button onClick={() => printPermit(r)} disabled={permitBusy[r.id]}
+          style={{ ...s.btn('primary'), padding: '6px 16px', fontSize: 10 }}>
+          {permitBusy[r.id] ? 'ALLOCATING SPP…' : (r.permit?.sppNo ? 'REPRINT SPP' : 'PRINT SPP')}
+        </button>
+        <span style={{ fontSize: 9, color: T.textFaint }}>
+          Issued under PPS. {r.permit?.sppNo
+            ? 'SPP number already assigned — reprints keep it.'
+            : 'SPP number is allocated on first print.'}
+          {!editable && ' View-only — reprints existing values.'}
+        </span>
+      </div>
+    </div>
+  );
+
   // App only routes here for roles with >= view access, so no extra gate here.
   return (
-    <div style={{ padding: 40, maxWidth: 1000 }}>
+    <div style={{ padding: 40, maxWidth: 1100 }}>
       <div style={{ marginBottom: 20 }}>
         <div style={{ fontSize: 11, color: T.amber, letterSpacing: 1.5 }}>STOCK CARDS</div>
         <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>
@@ -399,7 +622,6 @@ export default function StockCards({ role, user }) {
                 value={computed.excessLoss == null ? '—' : fmtL(computed.excessLoss)}
                 hint="max(0, storageLoss − tolerance)"
                 color={computed.excessLoss ? T.red : undefined} />
-              <Metric label="Total VHS Fee" value={fmtRp(computed.totalVhsFee)} />
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 16, marginTop: 16,
@@ -425,163 +647,108 @@ export default function StockCards({ role, user }) {
                 INCOMING CARGO (C) — {sel.bucket} · manual
               </div>
               {editable && (
-                <button onClick={addIncoming} style={{ ...s.btn('ghost'), padding: '4px 12px', fontSize: 10 }}>
-                  + ADD ROW
-                </button>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input ref={scanInputRef} type="file" accept={SCAN_ACCEPT}
+                    style={{ display: 'none' }} onChange={onScanFile} />
+                  <button onClick={() => scanInputRef.current?.click()} disabled={scanBusy}
+                    title="Read a scanned surveyor report (JPG/PNG/PDF) and fill a new row"
+                    style={{ ...s.btn('ghost'), padding: '4px 12px', fontSize: 10,
+                      color: T.amber, borderColor: T.amber, opacity: scanBusy ? 0.6 : 1 }}>
+                    {scanBusy ? 'READING…' : '📷 SCAN REPORT'}
+                  </button>
+                  <button onClick={addIncoming} style={{ ...s.btn('ghost'), padding: '4px 12px', fontSize: 10 }}>
+                    + ADD ROW
+                  </button>
+                </div>
               )}
             </div>
+            {scanMsg && (
+              <div style={{ fontSize: 10, color: T.textDim, marginBottom: 10,
+                border: `1px solid ${T.border}`, borderRadius: 4, padding: '6px 10px' }}>
+                {scanMsg}
+              </div>
+            )}
             {draft.incoming.length === 0 ? (
               <div style={{ color: T.textFaint, fontSize: 12, padding: '8px 0' }}>No incoming cargo recorded.</div>
             ) : (
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead>
-                  <tr>
-                    <th style={s.th}>DATE</th>
-                    <th style={s.th}>CARGO REF</th>
-                    <th style={{ ...s.th, textAlign: 'right' }}>VOLUME (L)</th>
-                    <th style={{ ...s.th, textAlign: 'right' }}>VHS RATE /L</th>
-                    <th style={{ ...s.th, textAlign: 'right' }}>VHS FEE</th>
-                    <th style={s.th}>NOTES</th>
-                    <th style={s.th}></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {draft.incoming.map(r => (
-                    <tr key={r.id}>
-                      <td style={s.td}>
-                        {editable
-                          ? <input style={{ ...s.input, width: 130 }} type="date" value={r.date || ''}
-                              onChange={e => setIncoming(r.id, 'date', e.target.value)} />
-                          : r.date}
-                      </td>
-                      <td style={s.td}>
-                        {editable
-                          ? <input style={s.input} value={r.cargoRef || ''}
-                              onChange={e => setIncoming(r.id, 'cargoRef', e.target.value)} />
-                          : r.cargoRef}
-                      </td>
-                      <td style={{ ...s.td, textAlign: 'right' }}>
-                        {editable
-                          ? <VolumeInput value={r.volumeL} onChange={v => setIncoming(r.id, 'volumeL', v)} style={{ width: 120 }} />
-                          : fmtL(r.volumeL)}
-                      </td>
-                      <td style={{ ...s.td, textAlign: 'right' }}>
-                        {editable
-                          ? <VolumeInput value={r.vhsRatePerL} onChange={v => setIncoming(r.id, 'vhsRatePerL', v)} style={{ width: 90 }} />
-                          : fmtL(r.vhsRatePerL)}
-                      </td>
-                      <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font, color: T.textDim }}>
-                        {fmtRp((Number(r.volumeL) || 0) * (Number(r.vhsRatePerL) || 0))}
-                      </td>
-                      <td style={s.td}>
-                        {editable
-                          ? <input style={s.input} value={r.notes || ''}
-                              onChange={e => setIncoming(r.id, 'notes', e.target.value)} />
-                          : r.notes}
-                      </td>
-                      <td style={{ ...s.td, textAlign: 'right', whiteSpace: 'nowrap' }}>
-                        <button onClick={() => openPermit(r)}
-                          title="Print a Delivery Order for the port-authority bunker permit"
-                          style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6,
-                            color: r.permit ? T.amber : T.text, borderColor: r.permit ? T.amber : T.border }}>
-                          PERMIT DO
-                        </button>
-                        {editable && (
-                          <button onClick={() => delIncoming(r.id)}
-                            style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, color: T.red }}>DEL</button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                  {/* Permit-DO editor row — spans the whole table, shown when open */}
-                  {draft.incoming.map(r => (
-                    permitOpen === r.id ? (
-                      <tr key={r.id + '_permit'}>
-                        <td colSpan={7} style={{ padding: 0, borderBottom: `1px solid ${T.border}` }}>
-                          <div style={{ background: T.amberGlow, padding: 14, borderTop: `2px solid ${T.amber}` }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                              <div style={{ fontSize: 10, color: T.amber, letterSpacing: 1.5 }}>
-                                SPP — SURAT PENGANTAR PENGIRIMAN · for port-authority bunker permit
-                                {r.permit?.sppNo && (
-                                  <span style={{ color: T.text, fontFamily: T.font, marginLeft: 8 }}>{r.permit.sppNo}</span>
-                                )}
-                              </div>
-                              <button onClick={() => setPermitOpen(null)}
-                                style={{ ...s.btn('ghost'), padding: '2px 10px', fontSize: 10 }}>CLOSE</button>
-                            </div>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
-                              <Field label="Est. Delivery Date">
-                                <input style={s.input} type="date" value={r.permit?.estDeliveryDate || ''} disabled={!editable}
-                                  onChange={e => setPermitField(r.id, 'estDeliveryDate', e.target.value)} />
-                              </Field>
-                              <Field label="Cargo Item / Fuel Type">
-                                {ftError ? (
-                                  <input style={s.input} value={r.permit?.product || ''} disabled={!editable}
-                                    onChange={e => setPermitField(r.id, 'product', e.target.value)}
-                                    placeholder="type fuel (FuelOps unavailable)" />
-                                ) : (
-                                  <select style={s.input} value={r.permit?.fuelTypeId || ''} disabled={!editable}
-                                    onChange={e => setPermitFuel(r.id, e.target.value)}>
-                                    <option value="">— select fuel —</option>
-                                    {fuelTypes.map(ft => <option key={ft.id} value={ft.id}>{ft.name}</option>)}
-                                  </select>
-                                )}
-                              </Field>
-                              <Field label="Quantity (L)">
-                                <VolumeInput value={r.permit?.quantityL ?? ''} disabled={!editable}
-                                  onChange={v => setPermitField(r.id, 'quantityL', v)} placeholder="200.000" />
-                              </Field>
-                              <Field label="Port Loading">
-                                <input style={s.input} value={r.permit?.portLoading || ''} disabled={!editable}
-                                  onChange={e => setPermitField(r.id, 'portLoading', e.target.value)}
-                                  placeholder="load port" />
-                              </Field>
-                              <Field label="Port Destination">
-                                <select style={s.input} value={r.permit?.portDestination || ''} disabled={!editable}
-                                  onChange={e => setPermitField(r.id, 'portDestination', e.target.value)}>
-                                  <option value="">— select node —</option>
-                                  {nodesC.data.map(n => <option key={n.id} value={n.name}>{n.name}</option>)}
-                                </select>
-                              </Field>
-                              <Field label="Supply Vessel">
-                                <input style={s.input} value={r.permit?.supplyVessel || ''} disabled={!editable}
-                                  onChange={e => setPermitField(r.id, 'supplyVessel', e.target.value)}
-                                  placeholder="e.g. SPOB Berkat Anugerah 06" />
-                              </Field>
-                              <Field label="Reference Number (PO / cargo ref)">
-                                <input style={s.input} value={r.permit?.referenceNo || ''} disabled={!editable}
-                                  onChange={e => setPermitField(r.id, 'referenceNo', e.target.value)}
-                                  placeholder="PO number" />
-                              </Field>
-                              <Field label="Recipient Name">
-                                <input style={s.input} value={r.permit?.recipientName || ''} disabled={!editable}
-                                  onChange={e => setPermitField(r.id, 'recipientName', e.target.value)}
-                                  placeholder="signer name" />
-                              </Field>
-                              <Field label="Note (optional)">
-                                <input style={s.input} value={r.permit?.note || ''} disabled={!editable}
-                                  onChange={e => setPermitField(r.id, 'note', e.target.value)} />
-                              </Field>
-                            </div>
-                            <div style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'center' }}>
-                              <button onClick={() => printPermit(r)} disabled={permitBusy[r.id]}
-                                style={{ ...s.btn('primary'), padding: '6px 16px', fontSize: 10 }}>
-                                {permitBusy[r.id] ? 'ALLOCATING SPP…' : (r.permit?.sppNo ? 'REPRINT SPP' : 'PRINT SPP')}
-                              </button>
-                              <span style={{ fontSize: 9, color: T.textFaint }}>
-                                Issued under PPS. {r.permit?.sppNo
-                                  ? 'SPP number already assigned — reprints keep it.'
-                                  : 'SPP number is allocated on first print.'}
-                                {!editable && ' View-only — reprints existing values.'}
-                              </span>
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
-                    ) : null
-                  ))}
-                </tbody>
-              </table>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                {draft.incoming.map(r => {
+                  const r4 = r4Of(r);
+                  return (
+                    <div key={r.id} style={{ border: `1px solid ${r._fromScan ? T.amber : T.border}`, borderRadius: 6, padding: 14 }}>
+                      {r._fromScan && (
+                        <div style={{ fontSize: 9, color: T.amber, letterSpacing: 1, marginBottom: 8 }}>
+                          ✦ FILLED FROM SCAN — review figures before saving
+                        </div>
+                      )}
+                      {/* Header: date, cargo ref, notes, actions */}
+                      <div style={{ display: 'grid', gridTemplateColumns: '150px 1fr 1fr auto', gap: 12, alignItems: 'end', marginBottom: 12 }}>
+                        <Field label="Date">
+                          {editable
+                            ? <input style={s.input} type="date" value={r.date || ''}
+                                onChange={e => setIncoming(r.id, 'date', e.target.value)} />
+                            : <div style={{ fontSize: 12 }}>{r.date}</div>}
+                        </Field>
+                        <Field label="Cargo Ref">
+                          {editable
+                            ? <input style={s.input} value={r.cargoRef || ''}
+                                onChange={e => setIncoming(r.id, 'cargoRef', e.target.value)} />
+                            : <div style={{ fontSize: 12 }}>{r.cargoRef || '—'}</div>}
+                        </Field>
+                        <Field label="Notes">
+                          {editable
+                            ? <input style={s.input} value={r.notes || ''}
+                                onChange={e => setIncoming(r.id, 'notes', e.target.value)} />
+                            : <div style={{ fontSize: 12 }}>{r.notes || '—'}</div>}
+                        </Field>
+                        <div style={{ whiteSpace: 'nowrap' }}>
+                          <button onClick={() => openPermit(r)}
+                            title="Print a Delivery Order for the port-authority bunker permit"
+                            style={{ ...s.btn('ghost'), padding: '6px 12px', fontSize: 10, marginRight: 6,
+                              color: r.permit ? T.amber : T.text, borderColor: r.permit ? T.amber : T.border }}>
+                            PERMIT DO
+                          </button>
+                          {editable && (
+                            <button onClick={() => delIncoming(r.id)}
+                              style={{ ...s.btn('ghost'), padding: '6px 12px', fontSize: 10, color: T.red }}>DEL</button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* 4 loading points + computed R4 */}
+                      <div style={{ fontSize: 9, color: T.textDim, letterSpacing: 1.5, marginBottom: 8 }}>
+                        LOADING INFORMATION · observed liters mandatory
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10 }}>
+                        {loadPointEditor(r, 'bl',     'B/L', 'Shore / loading figure')}
+                        {loadPointEditor(r, 'sfal',   'SFAL (R1)', 'Ship figure after loading')}
+                        {loadPointEditor(r, 'sfbd',   'SFBD (R2)', 'Ship figure before discharge')}
+                        {loadPointEditor(r, 'actual', 'Actual Received', 'Final figure into stock')}
+                      </div>
+
+                      {/* R4 = Actual − B/L (auto) */}
+                      <div style={{ marginTop: 10, display: 'flex', gap: 24, flexWrap: 'wrap',
+                        background: T.amberGlow, borderRadius: 4, padding: '8px 12px' }}>
+                        <div style={{ fontSize: 10, color: T.amber, letterSpacing: 1, alignSelf: 'center' }}>
+                          R4 · ACTUAL − B/L
+                        </div>
+                        <div style={{ fontSize: 11, color: T.textDim }}>
+                          Observed: <span style={{ fontFamily: T.font, color: r4.obs != null && r4.obs < 0 ? T.red : T.text }}>
+                            {r4.obs == null ? '—' : fmtL(r4.obs) + ' L'}
+                          </span>
+                        </div>
+                        <div style={{ fontSize: 11, color: T.textDim }}>
+                          @15°C: <span style={{ fontFamily: T.font, color: r4.l15 != null && r4.l15 < 0 ? T.red : T.text }}>
+                            {r4.l15 == null ? '—' : fmtL(r4.l15) + ' L'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {permitOpen === r.id && permitEditor(r)}
+                    </div>
+                  );
+                })}
+              </div>
             )}
           </div>
 
