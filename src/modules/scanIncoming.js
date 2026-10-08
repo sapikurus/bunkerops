@@ -6,8 +6,8 @@
 // in Firestore or anywhere else.
 //
 // Billing/keys are handled by Firebase AI Logic on the fuelops-pps project
-// (no API key in the browser). The Vertex AI / Firebase AI Logic API must be
-// enabled once for the project in the Firebase console.
+// (no API key in the browser). This uses the GEMINI DEVELOPER API backend —
+// the provider enabled for this project in Firebase console → AI Logic.
 
 import { getAI, getGenerativeModel, GoogleAIBackend, Schema } from 'firebase/ai';
 import { app } from '../firebase';
@@ -98,9 +98,15 @@ export async function scanIncomingReport(file) {
     throw new Error('File is too large (max 20 MB).');
   }
 
+  // Use the Gemini Developer API backend (this project enabled that provider,
+  // not Vertex AI). If GoogleAIBackend isn't present, the installed firebase SDK
+  // is too old for this entry point.
+  if (typeof GoogleAIBackend !== 'function') {
+    throw new Error('Firebase AI SDK is missing the Gemini Developer backend. Update firebase to ≥ 11.9 (npm install firebase@latest) and redeploy.');
+  }
   const ai = getAI(app, { backend: new GoogleAIBackend() });
   const model = getGenerativeModel(ai, {
-    model: 'gemini-2.0-flash',
+    model: 'gemini-2.5-flash',
     generationConfig: {
       responseMimeType: 'application/json',
       responseSchema,
@@ -121,8 +127,11 @@ export async function scanIncomingReport(file) {
   } catch (e) {
     // Surface the most common setup error clearly.
     const msg = e?.message || String(e);
+    if (/genai.?config.?not.?found|firebasevertexai/i.test(msg)) {
+      throw new Error('Backend mismatch: the app requested Vertex AI but this project enabled the Gemini Developer API. Redeploy the latest build (clear the Vercel cache). (' + msg + ')');
+    }
     if (/API|permission|enable|not.*found|403|404/i.test(msg)) {
-      throw new Error('Scan service not reachable. Make sure the Firebase AI Logic (Vertex AI) API is enabled for this project. (' + msg + ')');
+      throw new Error('Scan service not reachable. In Firebase console → AI Logic, confirm the Gemini Developer API is enabled for this project. (' + msg + ')');
     }
     throw new Error('Could not read the report: ' + msg);
   }
