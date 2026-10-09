@@ -120,6 +120,7 @@ export default function Invoicing({ role, user }) {
           soStatus: so.status || '',
           soDate: so.requestedDate || '',
           poRef: so.galleyPoRef || d?.clientPoRef || '',
+          bastNo: b?.nomorBast || '',
           bastDate: b?.tanggalBast || '',
           client: so.clientName || d?.deliverTo || '',
           entity: so.entityName || '',
@@ -258,15 +259,117 @@ export default function Invoicing({ role, user }) {
       style={{ ...s.input, width: 120, fontSize: 11 }} />
   );
 
+  // ---- Client-facing reconciliation report ---------------------------------
+  // Delivered bunkerings (have a BAST) that are NOT yet invoiced/priced — the
+  // "done but not paid yet" list to reconcile with the client before invoicing.
+  // NO pricing is shown: DO no, BAST no, client PO ref, vessel, qty, BAST date.
+  // Respects the active filters (so it can be scoped to one client / period).
+  const reconRows = useMemo(
+    () => filteredRows.filter(r => r.hasBast && !r.priced),
+    [filteredRows]);
+
+  const generateReconReport = () => {
+    if (reconRows.length === 0) {
+      alert('No delivered, not-yet-invoiced bunkerings match the current filters.');
+      return;
+    }
+    const esc = (v) => String(v ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    const totalQty = reconRows.reduce((a, r) => a + (Number(r.qty) || 0), 0);
+    const clientLabel = fClient || (new Set(reconRows.map(r => r.client)).size === 1 ? reconRows[0].client : 'All clients');
+    const period = (fFrom || fTo)
+      ? `${fFrom || '…'} to ${fTo || '…'}`
+      : 'All dates';
+    const printedAt = new Date().toLocaleString('id-ID');
+
+    const bodyRows = reconRows.map((r, i) => `
+      <tr>
+        <td class="c">${i + 1}</td>
+        <td>${esc(r.brNo || '—')}</td>
+        <td>${esc(r.bastNo || '—')}</td>
+        <td>${esc(r.poRef || '—')}</td>
+        <td>${esc(r.vessel || '—')}</td>
+        <td class="r">${(Number(r.qty) || 0).toLocaleString('id-ID')}</td>
+        <td class="c">${esc(r.bastDate || '—')}</td>
+      </tr>`).join('');
+
+    const html = `<!doctype html><html><head><meta charset="utf-8">
+<title>Bunker Delivery Reconciliation</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: Arial, Helvetica, sans-serif; color: #111; margin: 32px; font-size: 12px; }
+  h1 { font-size: 18px; margin: 0 0 2px; letter-spacing: .5px; }
+  .sub { color: #555; font-size: 11px; margin-bottom: 16px; }
+  .meta { width: 100%; border-collapse: collapse; margin-bottom: 14px; font-size: 11px; }
+  .meta td { padding: 2px 6px; }
+  .meta .k { color: #666; width: 120px; }
+  table.data { width: 100%; border-collapse: collapse; }
+  table.data th, table.data td { border: 1px solid #bbb; padding: 6px 8px; }
+  table.data th { background: #f2f2f2; text-align: left; font-size: 10px; letter-spacing: .5px; text-transform: uppercase; }
+  td.r { text-align: right; font-variant-numeric: tabular-nums; }
+  td.c { text-align: center; }
+  tfoot td { font-weight: bold; background: #fafafa; }
+  .note { margin-top: 18px; font-size: 10px; color: #666; }
+  .sign { margin-top: 48px; display: flex; justify-content: space-between; }
+  .sign div { width: 44%; }
+  .sign .line { border-top: 1px solid #333; margin-top: 56px; padding-top: 4px; text-align: center; font-size: 10px; color: #444; }
+  @media print { body { margin: 14mm; } }
+</style></head>
+<body>
+  <h1>BUNKER DELIVERY RECONCILIATION</h1>
+  <div class="sub">Delivered bunkerings pending invoicing — for reconciliation prior to invoice issuance.</div>
+  <table class="meta">
+    <tr><td class="k">Client</td><td>${esc(clientLabel)}</td><td class="k">Period</td><td>${esc(period)}</td></tr>
+    <tr><td class="k">Deliveries</td><td>${reconRows.length}</td><td class="k">Printed</td><td>${esc(printedAt)}</td></tr>
+  </table>
+  <table class="data">
+    <thead>
+      <tr>
+        <th>#</th><th>DO Number</th><th>BAST Number</th><th>Client PO Ref</th>
+        <th>Vessel</th><th>Qty (L)</th><th>BAST Date</th>
+      </tr>
+    </thead>
+    <tbody>${bodyRows}</tbody>
+    <tfoot>
+      <tr>
+        <td colspan="5" style="text-align:right">TOTAL QUANTITY (L)</td>
+        <td class="r">${totalQty.toLocaleString('id-ID')}</td>
+        <td></td>
+      </tr>
+    </tfoot>
+  </table>
+  <div class="note">Quantities are the observed liters received per the signed BAST. This document lists
+    deliveries not yet invoiced and is issued for quantity reconciliation only.</div>
+  <div class="sign">
+    <div><div class="line">Prepared by (PPS)</div></div>
+    <div><div class="line">Acknowledged by (Client)</div></div>
+  </div>
+  <script>setTimeout(function(){ window.print(); }, 350);</script>
+</body></html>`;
+
+    const w = window.open('', '_blank');
+    if (!w) { alert('Pop-up blocked — allow pop-ups to print the report.'); return; }
+    w.document.write(html);
+    w.document.close();
+  };
+
   return (
     <div style={{ padding: narrow ? 16 : 40, maxWidth: 1200 }}>
-      <div style={{ marginBottom: 20 }}>
-        <div style={{ fontSize: 11, color: T.amber, letterSpacing: 1.5 }}>COMMERCIAL — PRICING CONTROL</div>
-        <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>
-          All sales orders with their live status; pricing opens once a BAST gives an observed-liter quantity.
-          Set DPP &amp; OAT (Rp/L) and PBBKB (% of DPP) across several at once. PPN is {PPN_PCT}% of DPP+OAT.
-          Control/record only — invoices are issued elsewhere.
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16,
+        flexWrap: 'wrap', marginBottom: 20 }}>
+        <div style={{ flex: 1, minWidth: 240 }}>
+          <div style={{ fontSize: 11, color: T.amber, letterSpacing: 1.5 }}>COMMERCIAL — PRICING CONTROL</div>
+          <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>
+            All sales orders with their live status; pricing opens once a BAST gives an observed-liter quantity.
+            Set DPP &amp; OAT (Rp/L) and PBBKB (% of DPP) across several at once. PPN is {PPN_PCT}% of DPP+OAT.
+            Control/record only — invoices are issued elsewhere.
+          </div>
         </div>
+        <button onClick={generateReconReport}
+          title="Client-facing list of delivered bunkerings not yet invoiced — no pricing shown"
+          style={{ ...s.btn('ghost'), fontSize: 11, whiteSpace: 'nowrap',
+            color: T.amber, borderColor: T.amber }}>
+          🧾 RECONCILIATION REPORT
+        </button>
       </div>
 
       {/* Cargo-type toggle: PPS cargo (default) vs MBSS cargo */}
