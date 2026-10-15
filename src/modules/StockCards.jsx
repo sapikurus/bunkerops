@@ -70,32 +70,35 @@ function computeCard({ openingROB, incoming, dispatched, measuredROB }) {
   return { totalC, totalD, bookROB, storageLoss, toleranceAllowance, excessLoss };
 }
 
-export default function StockCards({ role, user }) {
-  const cardsC = useCollection(COL.stockCards);
-  const nodesC = useCollection(COL.nodes);
-  const doC    = useCollection(COL.deliveryOrders);
-  const { fuelTypes, error: ftError } = useFuelOpsMaster();
+// Visual identity per ownership bucket (matches PPS / Non-PPS colours elsewhere).
+const BUCKET_META = {
+  PPS:  { label: 'PPS CARGO',  owner: 'PT Petroprima Sejahtera', color: () => T.green },
+  MBSS: { label: 'MBSS CARGO', owner: 'MBSS (Non-PPS)',          color: () => T.blue  },
+};
 
-  const now = new Date();
-  const [sel, setSel] = useState({
-    nodeId: '',
-    bucket: BUCKETS[0],
-    year:   now.getFullYear(),
-    month:  now.getMonth() + 1,
-  });
+// Which ownership bucket a DO belongs to. Uses the stored bucket; falls back to
+// the scheme for any DO that predates the bucket field.
+const doBucket = (d) => d.bucket || (d.scheme === 'NON_PPS_SALE' ? 'MBSS' : 'PPS');
 
-  // Local editable draft for the currently-selected card. Mirrors the stored
-  // doc but holds unsaved edits until the user saves.
+// One ownership ledger (PPS or MBSS) inside the physical tank of a node/month.
+// Each ledger is its own Firestore doc ({nodeId}_{bucket}_{YYYY-MM}) with its
+// own incoming, dispatched, ROB, close/lock lifecycle. The parent shows both
+// ledgers plus the combined tank total.
+function BucketLedger({
+  role, user, nodeId, year, month, bucket,
+  cardsC, nodesC, doC, fuelTypes, ftError, onState,
+}) {
+  // Same shape the original single-card logic used, so all the ledger code
+  // below keeps working unchanged.
+  const sel = { nodeId, bucket, year, month };
+  const meta = BUCKET_META[bucket] || { label: bucket, owner: bucket, color: () => T.amber };
+  const accent = meta.color();
+
+  // Local editable draft for this ledger. Mirrors the stored doc but holds
+  // unsaved edits until the user saves.
   const [draft, setDraft] = useState(null);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy]   = useState(false);
-
-  // Default node to the first available once nodes load.
-  useEffect(() => {
-    if (!sel.nodeId && nodesC.data.length) {
-      setSel(v => ({ ...v, nodeId: nodesC.data[0].id }));
-    }
-  }, [nodesC.data, sel.nodeId]);
 
   const cardId = sel.nodeId ? cardIdFor(sel.nodeId, sel.bucket, sel.year, sel.month) : '';
   const stored = cardsC.data.find(c => c.id === cardId) || null;
@@ -145,7 +148,20 @@ export default function StockCards({ role, user }) {
   const editable = canManage(role, 'stockCards') && !locked;
   const computed = draft ? computeCard(draft) : null;
 
-  const setSelField = (k, v) => setSel(s2 => ({ ...s2, [k]: v }));
+  // Report this ledger's live figures (including unsaved edits) to the parent
+  // so the tank summary can show PPS, MBSS and the combined physical tank.
+  useEffect(() => {
+    if (!onState) return;
+    onState(bucket, draft ? {
+      openingROB: Number(draft.openingROB) || 0,
+      measuredROB: (draft.measuredROB === '' || draft.measuredROB == null) ? null : Number(draft.measuredROB),
+      status: draft.status || 'open',
+      dirty,
+      ...computed,
+    } : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bucket, draft, dirty]);
+
   const patch = (obj) => { setDraft(d => ({ ...d, ...obj })); setDirty(true); };
 
   // ---- Incoming (manual) ---------------------------------------------------
@@ -245,8 +261,11 @@ export default function StockCards({ role, user }) {
     if (!r.permit) {
       setIncoming(r.id, 'permit', {
         sppNo: '',                 // auto-allocated on first print
-        referenceNo: '',           // user-typed PO / cargo ref
+        sppDate: '',               // set when the SPP number is allocated
+        deliveryTo: '',            // receiving party, typed per permit
+        referenceNo: '',           // (legacy) PO / cargo ref — not printed in the BR layout
         estDeliveryDate: r.date || todayISO(),
+        estDeliveryTime: '',       // optional HH:MM
         quantityL: r.volumeL || '',
         fuelTypeId: '',
         product: '',               // fuel type name (from dropdown / manual)
@@ -297,8 +316,10 @@ export default function StockCards({ role, user }) {
         const nodeCode = node?.code || NODES.OB_GALLEY.code;
         sppNo = formatSppNumber({ seq, issuerCode, nodeCode, monthIndex: d.getMonth(), year: d.getFullYear() });
         // Persist onto the permit so reprints keep the same number.
+        const sppDate = todayISO();
         setPermitField(r.id, 'sppNo', sppNo);
-        p = { ...p, sppNo };
+        setPermitField(r.id, 'sppDate', sppDate);
+        p = { ...p, sppNo, sppDate };
       } catch (e) {
         setPermitBusy(m => ({ ...m, [r.id]: false }));
         alert('Could not allocate SPP number: ' + e.message);
@@ -310,15 +331,14 @@ export default function StockCards({ role, user }) {
     const html = buildCargoDOHtml({
       issuerLogo: PPS_LOGO,
       sppNo,
-      printDate: todayISO(),
-      estDeliveryDate: p.estDeliveryDate || r.date || '',
-      quantityL: p.quantityL || r.volumeL || 0,
-      product: p.product || '',
-      portLoading: p.portLoading || '',
-      portDestination: p.portDestination || node?.name || '',
+      sppDate: p.sppDate || todayISO(),
+      deliveryTo: p.deliveryTo || '',
       supplyVessel: p.supplyVessel || '',
-      referenceNo: p.referenceNo || '',
-      recipientName: p.recipientName || '',
+      portDestination: p.portDestination || node?.name || '',
+      product: p.product || '',
+      quantityL: p.quantityL || r.volumeL || 0,
+      estDeliveryDate: p.estDeliveryDate || r.date || '',
+      estDeliveryTime: p.estDeliveryTime || '',
       note: p.note || '',
     });
     openPrint(html);
@@ -328,7 +348,8 @@ export default function StockCards({ role, user }) {
   const syncDispatched = () => {
     const matches = doC.data.filter(d =>
       d.nodeId === sel.nodeId &&
-      d.bucket === sel.bucket &&
+      d.status !== 'cancelled' &&
+      doBucket(d) === sel.bucket &&
       d.brDate &&
       new Date(d.brDate).getFullYear() === Number(sel.year) &&
       new Date(d.brDate).getMonth() + 1 === Number(sel.month));
@@ -402,20 +423,20 @@ export default function StockCards({ role, user }) {
   const save  = () => persist();
   const close = async () => {
     if (draft.measuredROB === '' || draft.measuredROB == null) {
-      alert('Set the measured ROB (month-end sounding) before closing.');
+      alert(`Set the ${bucket} measured ROB (month-end sounding) before closing.`);
       return;
     }
-    if (!confirm('Close this stock card? It records who closed it and when.')) return;
+    if (!confirm(`Close the ${bucket} ledger for this month? It records who closed it and when.`)) return;
     setDraft(d => ({ ...d, status: 'closed' }));
     await persist({ status: 'closed', closedBy: user?.email || '', closedAt: new Date().toISOString() });
   };
   const reopen = async () => {
-    if (!confirm('Re-open this closed card for edits?')) return;
+    if (!confirm(`Re-open the closed ${bucket} ledger for edits?`)) return;
     setDraft(d => ({ ...d, status: 'open' }));
     await persist({ status: 'open' });
   };
   const lock = async () => {
-    if (!confirm('Lock this card? It becomes permanently immutable in the UI.')) return;
+    if (!confirm(`Lock the ${bucket} ledger? It becomes permanently immutable in the UI.`)) return;
     setDraft(d => ({ ...d, status: 'locked' }));
     await persist({ status: 'locked' });
   };
@@ -470,12 +491,26 @@ export default function StockCards({ role, user }) {
         <button onClick={() => setPermitOpen(null)}
           style={{ ...s.btn('ghost'), padding: '2px 10px', fontSize: 10 }}>CLOSE</button>
       </div>
+      {/* Fields follow the printed document, top to bottom. */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
-        <Field label="Est. Delivery Date">
-          <input style={s.input} type="date" value={r.permit?.estDeliveryDate || ''} disabled={!editable}
-            onChange={e => setPermitField(r.id, 'estDeliveryDate', e.target.value)} />
+        <Field label="Delivery To (recipient)">
+          <input style={s.input} value={r.permit?.deliveryTo || ''} disabled={!editable}
+            onChange={e => setPermitField(r.id, 'deliveryTo', e.target.value)}
+            placeholder="e.g. PT GALLEY ADHIKA ARNAWAMA" />
         </Field>
-        <Field label="Cargo Item / Fuel Type">
+        <Field label="Vessel Name (supply vessel)">
+          <input style={s.input} value={r.permit?.supplyVessel || ''} disabled={!editable}
+            onChange={e => setPermitField(r.id, 'supplyVessel', e.target.value)}
+            placeholder="e.g. SPOB Berkat Anugerah 06" />
+        </Field>
+        <Field label="Delivery Location (destination)">
+          <select style={s.input} value={r.permit?.portDestination || ''} disabled={!editable}
+            onChange={e => setPermitField(r.id, 'portDestination', e.target.value)}>
+            <option value="">— select node —</option>
+            {nodesC.data.map(n => <option key={n.id} value={n.name}>{n.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Description (fuel type)">
           {ftError ? (
             <input style={s.input} value={r.permit?.product || ''} disabled={!editable}
               onChange={e => setPermitField(r.id, 'product', e.target.value)}
@@ -488,41 +523,26 @@ export default function StockCards({ role, user }) {
             </select>
           )}
         </Field>
-        <Field label="Quantity (L)">
+        <Field label="Qty (Liters)">
           <VolumeInput value={r.permit?.quantityL ?? ''} disabled={!editable}
             onChange={v => setPermitField(r.id, 'quantityL', v)} placeholder="200.000" />
         </Field>
-        <Field label="Port Loading">
-          <input style={s.input} value={r.permit?.portLoading || ''} disabled={!editable}
-            onChange={e => setPermitField(r.id, 'portLoading', e.target.value)}
-            placeholder="load port" />
-        </Field>
-        <Field label="Port Destination">
-          <select style={s.input} value={r.permit?.portDestination || ''} disabled={!editable}
-            onChange={e => setPermitField(r.id, 'portDestination', e.target.value)}>
-            <option value="">— select node —</option>
-            {nodesC.data.map(n => <option key={n.id} value={n.name}>{n.name}</option>)}
-          </select>
-        </Field>
-        <Field label="Supply Vessel">
-          <input style={s.input} value={r.permit?.supplyVessel || ''} disabled={!editable}
-            onChange={e => setPermitField(r.id, 'supplyVessel', e.target.value)}
-            placeholder="e.g. SPOB Berkat Anugerah 06" />
-        </Field>
-        <Field label="Reference Number (PO / cargo ref)">
-          <input style={s.input} value={r.permit?.referenceNo || ''} disabled={!editable}
-            onChange={e => setPermitField(r.id, 'referenceNo', e.target.value)}
-            placeholder="PO number" />
-        </Field>
-        <Field label="Recipient Name">
-          <input style={s.input} value={r.permit?.recipientName || ''} disabled={!editable}
-            onChange={e => setPermitField(r.id, 'recipientName', e.target.value)}
-            placeholder="signer name" />
-        </Field>
-        <Field label="Note (optional)">
-          <input style={s.input} value={r.permit?.note || ''} disabled={!editable}
-            onChange={e => setPermitField(r.id, 'note', e.target.value)} />
-        </Field>
+        <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 8 }}>
+          <Field label="Est. Delivery Date">
+            <input style={s.input} type="date" value={r.permit?.estDeliveryDate || ''} disabled={!editable}
+              onChange={e => setPermitField(r.id, 'estDeliveryDate', e.target.value)} />
+          </Field>
+          <Field label="Time (optional)">
+            <input style={s.input} type="time" value={r.permit?.estDeliveryTime || ''} disabled={!editable}
+              onChange={e => setPermitField(r.id, 'estDeliveryTime', e.target.value)} />
+          </Field>
+        </div>
+        <div style={{ gridColumn: '1 / -1' }}>
+          <Field label="Note (optional)">
+            <input style={s.input} value={r.permit?.note || ''} disabled={!editable}
+              onChange={e => setPermitField(r.id, 'note', e.target.value)} />
+          </Field>
+        </div>
       </div>
       <div style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'center' }}>
         <button onClick={() => printPermit(r)} disabled={permitBusy[r.id]}
@@ -539,46 +559,16 @@ export default function StockCards({ role, user }) {
     </div>
   );
 
-  // App only routes here for roles with >= view access, so no extra gate here.
   return (
-    <div style={{ padding: 40, maxWidth: 1100 }}>
-      <div style={{ marginBottom: 20 }}>
-        <div style={{ fontSize: 11, color: T.amber, letterSpacing: 1.5 }}>STOCK CARDS</div>
-        <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>
-          One card per node · bucket · month. Buckets (PPS / MBSS) are never commingled.
-          Dispatched pulls from Delivery Orders; incoming cargo is entered manually.
+    <div id={`ledger-${bucket}`} style={{ marginBottom: 36 }}>
+      {/* Ledger heading */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12,
+        flexWrap: 'wrap', borderBottom: `2px solid ${accent}`, paddingBottom: 8, marginBottom: 16 }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: accent, letterSpacing: 1.5 }}>{meta.label} LEDGER</div>
+          <div style={{ fontSize: 10, color: T.textDim, marginTop: 2 }}>Owner: {meta.owner}</div>
         </div>
-      </div>
-
-      {/* Selector row */}
-      <div style={{ ...s.card, marginBottom: 20 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: 12 }}>
-          <div>
-            <label style={s.label}>Node</label>
-            <select style={s.input} value={sel.nodeId} onChange={e => setSelField('nodeId', e.target.value)}>
-              {nodesC.data.length === 0 && <option value="">No nodes</option>}
-              {nodesC.data.map(n => <option key={n.id} value={n.id}>{n.name}</option>)}
-            </select>
-          </div>
-          <div>
-            <label style={s.label}>Bucket</label>
-            <select style={s.input} value={sel.bucket} onChange={e => setSelField('bucket', e.target.value)}>
-              {BUCKETS.map(b => <option key={b} value={b}>{b}</option>)}
-            </select>
-          </div>
-          <div>
-            <label style={s.label}>Year</label>
-            <input style={s.input} type="number" value={sel.year}
-              onChange={e => setSelField('year', Number(e.target.value))} />
-          </div>
-          <div>
-            <label style={s.label}>Month</label>
-            <select style={s.input} value={sel.month} onChange={e => setSelField('month', Number(e.target.value))}>
-              {MONTHS_ID.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
-            </select>
-          </div>
-        </div>
-        <div style={{ fontSize: 10, color: T.textDim, marginTop: 12 }}>
+        <div style={{ fontSize: 10, color: T.textDim }}>
           Card: <span style={{ color: T.amber, fontFamily: T.font }}>{cardId || '—'}</span>
           {' · '}Status: <span style={{
             color: locked ? T.red : draft?.status === 'closed' ? T.blue : T.green,
@@ -589,12 +579,12 @@ export default function StockCards({ role, user }) {
       </div>
 
       {!draft ? (
-        <div style={{ color: T.textFaint, fontSize: 12, padding: 20 }}>Select a node to load a card.</div>
+        <div style={{ color: T.textFaint, fontSize: 12, padding: 20 }}>Loading…</div>
       ) : (
         <>
           {/* Summary panel */}
           <div style={{ ...s.card, marginBottom: 20 }}>
-            <div style={{ fontSize: 10, color: T.textDim, letterSpacing: 1.5, marginBottom: 14 }}>SUMMARY</div>
+            <div style={{ fontSize: 10, color: T.textDim, letterSpacing: 1.5, marginBottom: 14 }}>{meta.label} — SUMMARY</div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 16 }}>
               <Field label="Opening ROB (L)">
                 <VolumeInput value={draft.openingROB}
@@ -804,10 +794,10 @@ export default function StockCards({ role, user }) {
             ) : editable ? (
               <>
                 <button onClick={save} disabled={busy || !dirty} style={{ ...s.btn('primary'), opacity: (busy || !dirty) ? 0.5 : 1 }}>
-                  {busy ? 'SAVING…' : 'SAVE'}
+                  {busy ? 'SAVING…' : `SAVE ${bucket} LEDGER`}
                 </button>
                 {draft.status === 'open' && (
-                  <button onClick={close} disabled={busy} style={s.btn('ghost')}>CLOSE MONTH</button>
+                  <button onClick={close} disabled={busy} style={s.btn('ghost')}>CLOSE {bucket} MONTH</button>
                 )}
                 {draft.status === 'closed' && (
                   <>
@@ -825,6 +815,182 @@ export default function StockCards({ role, user }) {
               <div style={{ fontSize: 12, color: T.textDim }}>View-only — you don’t have edit access to stock cards.</div>
             )}
           </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// --- Page: one physical tank (node · month), split into ownership ledgers ----
+export default function StockCards({ role, user }) {
+  const cardsC = useCollection(COL.stockCards);
+  const nodesC = useCollection(COL.nodes);
+  const doC    = useCollection(COL.deliveryOrders);
+  const { fuelTypes, error: ftError } = useFuelOpsMaster();
+
+  const now = new Date();
+  const [sel, setSel] = useState({
+    nodeId: '',
+    year:   now.getFullYear(),
+    month:  now.getMonth() + 1,
+  });
+  const setSelField = (k, v) => setSel(s2 => ({ ...s2, [k]: v }));
+
+  // Default node to the first available once nodes load.
+  useEffect(() => {
+    if (!sel.nodeId && nodesC.data.length) {
+      setSel(v => ({ ...v, nodeId: nodesC.data[0].id }));
+    }
+  }, [nodesC.data, sel.nodeId]);
+
+  // Live figures reported by each ledger, for the tank summary.
+  const [ledgerState, setLedgerState] = useState({});
+  // Ledgers remount per node/period (keyed below) and re-report, overwriting
+  // the previous period's figures for their bucket.
+  const onState = useMemo(() => (bucket, st) =>
+    setLedgerState(m => ({ ...m, [bucket]: st })), []);
+
+  const node = nodesC.data.find(n => n.id === sel.nodeId);
+
+  // Tank total = sum of the ledgers. Measured total only when every ledger has
+  // a sounding (otherwise the physical total would be misleading).
+  const tank = useMemo(() => {
+    const list = BUCKETS.map(b => ledgerState[b]).filter(Boolean);
+    if (list.length === 0) return null;
+    const sum = (k) => list.reduce((a, x) => a + (Number(x[k]) || 0), 0);
+    const allMeasured = list.length === BUCKETS.length && list.every(x => x.measuredROB != null);
+    const measuredROB = allMeasured ? sum('measuredROB') : null;
+    const bookROB = sum('bookROB');
+    const allLoss = list.every(x => x.storageLoss != null) && list.length === BUCKETS.length;
+    return {
+      openingROB: sum('openingROB'),
+      totalC: sum('totalC'),
+      totalD: sum('totalD'),
+      bookROB,
+      measuredROB,
+      storageLoss: allLoss ? sum('storageLoss') : null,
+      toleranceAllowance: sum('toleranceAllowance'),
+      excessLoss: allLoss ? sum('excessLoss') : null,
+    };
+  }, [ledgerState]);
+
+  const summaryRows = [
+    { k: 'openingROB',  label: 'Opening ROB' },
+    { k: 'totalC',      label: 'ΣC — Incoming' },
+    { k: 'totalD',      label: 'ΣD — Dispatched' },
+    { k: 'bookROB',     label: 'Book ROB', strong: true },
+    { k: 'measuredROB', label: 'Measured ROB' },
+    { k: 'storageLoss', label: 'Storage Loss', loss: true },
+    { k: 'toleranceAllowance', label: `Tolerance (${TOLERANCE_PCT}% × ΣC)` },
+    { k: 'excessLoss',  label: 'Excess Loss', loss: true },
+  ];
+  const cell = (v, opts = {}) => {
+    if (v == null) return <span style={{ color: T.textFaint }}>—</span>;
+    // Red for a positive loss, or a negative book ROB (more dispatched than
+    // this owner ever had — usually incoming booked to the wrong ledger).
+    const red = (opts.loss && Number(v) > 0) || (opts.strong && Number(v) < 0);
+    return <span style={{ color: red ? T.red : (opts.strong ? T.amber : T.text),
+      fontWeight: opts.strong ? 700 : 400 }}>{fmtL(v)}</span>;
+  };
+
+  // App only routes here for roles with >= view access, so no extra gate here.
+  return (
+    <div style={{ padding: 40, maxWidth: 1100 }}>
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ fontSize: 11, color: T.amber, letterSpacing: 1.5 }}>STOCK CARDS</div>
+        <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>
+          One tank per node · month, split into ownership ledgers (PPS / MBSS) that are never commingled.
+          Each ledger has its own incoming cargo, dispatched DOs and ROB. Dispatched pulls from Delivery Orders
+          by scheme; incoming cargo is entered manually or scanned.
+        </div>
+      </div>
+
+      {/* Selector row: tank + period (bucket is no longer a selector) */}
+      <div style={{ ...s.card, marginBottom: 20 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 12 }}>
+          <div>
+            <label style={s.label}>Node / Tank</label>
+            <select style={s.input} value={sel.nodeId} onChange={e => setSelField('nodeId', e.target.value)}>
+              {nodesC.data.length === 0 && <option value="">No nodes</option>}
+              {nodesC.data.map(n => <option key={n.id} value={n.id}>{n.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={s.label}>Year</label>
+            <input style={s.input} type="number" value={sel.year}
+              onChange={e => setSelField('year', Number(e.target.value))} />
+          </div>
+          <div>
+            <label style={s.label}>Month</label>
+            <select style={s.input} value={sel.month} onChange={e => setSelField('month', Number(e.target.value))}>
+              {MONTHS_ID.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {!sel.nodeId ? (
+        <div style={{ color: T.textFaint, fontSize: 12, padding: 20 }}>Select a node to load its tank.</div>
+      ) : (
+        <>
+          {/* Tank summary: PPS | MBSS | physical tank total */}
+          <div style={{ ...s.card, marginBottom: 28 }}>
+            <div style={{ fontSize: 10, color: T.textDim, letterSpacing: 1.5, marginBottom: 12 }}>
+              TANK SUMMARY — {(node?.name || '').toUpperCase()} · {MONTHS_ID[sel.month - 1]} {sel.year} (L)
+            </div>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 520 }}>
+                <thead>
+                  <tr>
+                    <th style={s.th}></th>
+                    {BUCKETS.map(b => {
+                      const m = BUCKET_META[b];
+                      const st = ledgerState[b];
+                      return (
+                        <th key={b} style={{ ...s.th, textAlign: 'right' }}>
+                          <a href={`#ledger-${b}`} style={{ color: m ? m.color() : T.text, textDecoration: 'none' }}>
+                            {m ? m.label : b}
+                          </a>
+                          {st?.dirty && <span style={{ color: T.amber }}> •</span>}
+                        </th>
+                      );
+                    })}
+                    <th style={{ ...s.th, textAlign: 'right', color: T.amber }}>TANK TOTAL</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {summaryRows.map(row => (
+                    <tr key={row.k}>
+                      <td style={{ ...s.td, fontSize: 11, color: T.textDim }}>{row.label}</td>
+                      {BUCKETS.map(b => (
+                        <td key={b} style={{ ...s.td, textAlign: 'right', fontFamily: T.font }}>
+                          {cell(ledgerState[b]?.[row.k], row)}
+                        </td>
+                      ))}
+                      <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font,
+                        background: T.amberGlow }}>
+                        {cell(tank?.[row.k], row)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ fontSize: 9, color: T.textFaint, marginTop: 8 }}>
+              Figures include unsaved edits (• = unsaved). Tank measured ROB and losses show once every ledger has a sounding.
+            </div>
+          </div>
+
+          {/* One ledger per ownership bucket */}
+          {BUCKETS.map(b => (
+            <BucketLedger
+              key={`${sel.nodeId}_${b}_${sel.year}_${sel.month}`}
+              role={role} user={user}
+              nodeId={sel.nodeId} year={sel.year} month={sel.month} bucket={b}
+              cardsC={cardsC} nodesC={nodesC} doC={doC}
+              fuelTypes={fuelTypes} ftError={ftError}
+              onState={onState} />
+          ))}
         </>
       )}
     </div>

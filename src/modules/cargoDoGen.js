@@ -1,125 +1,124 @@
-// Incoming-cargo Delivery Order (SPP — Surat Pengantar Pengiriman) generator.
-// SEPARATE from the sales-side DO (doGen.js). Accompanies an incoming cargo
-// receipt and is used to APPLY FOR A BUNKER PERMIT at the port authority.
+// cargoDoGen.js — printable Permit DO / SPP (Surat Pengantar Pengiriman) for the
+// port-authority bunker permit on incoming cargo.
 //
-// Issued under PPS (the cargo owner). Carries an auto-generated SPP number in
-// the Ref. No box; the body shows a single user-typed reference (the PO / cargo
-// ref). Reuses the letterhead preset + print CSS from doGen.js for house style.
+// Layout follows the client's BR form: letterhead + logo, number/date box,
+// Delivery To / Vessel Name / Delivery Location boxes, a one-line item table,
+// estimated delivery, note, and four signature columns. Issued under PPS.
 
-import { DO_ISSUERS } from './doGen';
+// PPS letterhead — each address string prints on its own line (shown uppercase).
+export const PPS_LETTERHEAD = {
+  name: 'PT. PETROPRIMA SEJAHTERA',
+  addressLines: [
+    'Jl. P Antasari 66B, Kel. Teluk Lerong Ulu',
+    'Sungai Kunjang, Samarinda, Kalimantan Timur',
+  ],
+};
 
-export function buildCargoDOHtml(cfg) {
-  const {
-    issuerLogo,        // data-URI logo (PPS)
-    sppNo,             // auto-generated SPP number -> Ref. No box
-    printDate,         // ISO — when generated (defaults today)
-    estDeliveryDate,   // ISO — estimated delivery date (user input)
-    quantityL,         // number (L) — user input
-    product,           // string — fuel type / cargo item name
-    portLoading,       // string — load port (user input)
-    portDestination,   // string — destination node/port (dropdown)
-    supplyVessel,      // string — user input
-    referenceNo,       // string — user-typed PO / cargo reference
-    recipientName,     // optional — printed under the recipient signature
-    note,              // optional free text
-  } = cfg;
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-  // Always issued under PPS (cargo owner) for the permit application.
-  const issuer = { ...DO_ISSUERS.PPS, logo: issuerLogo };
+const esc = (v) => String(v ?? '').replace(/[&<>"]/g, c =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-  const fmtDate = (d) => {
-    if (!d) return '-';
-    const dt = new Date(d);
-    if (isNaN(dt)) return d;
-    const dd = String(dt.getDate()).padStart(2, '0');
-    const mm = String(dt.getMonth() + 1).padStart(2, '0');
-    return `${dd}/${mm}/${dt.getFullYear()}`;
-  };
-  const fmtL = (n) => (Number(n) || 0).toLocaleString('id-ID');
+// 'YYYY-MM-DD' → '03-Oct-2026'. Parsed by parts so the timezone can't shift the day.
+function fmtDate(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ''));
+  if (!m) return iso ? esc(iso) : '-';
+  return `${m[3]}-${MON[Number(m[2]) - 1]}-${m[1]}`;
+}
 
-  return `<!DOCTYPE html><html><head><meta charset="UTF-8">
-<title>Delivery Order ${sppNo || ''}</title>
+// Quantity with comma thousands, as on the BR form: 34053 → '34,053'.
+const fmtQty = (n) => (Number(n) || 0).toLocaleString('en-US', { maximumFractionDigits: 3 });
+
+/**
+ * Build the Permit DO HTML.
+ * @param {object} p
+ *   sppNo, sppDate (YYYY-MM-DD), deliveryTo, supplyVessel, portDestination,
+ *   product, quantityL, estDeliveryDate (YYYY-MM-DD), estDeliveryTime (HH:MM),
+ *   note, issuerLogo (data URL / URL)
+ */
+export function buildCargoDOHtml(p) {
+  const lh = PPS_LETTERHEAD;
+  const est = fmtDate(p.estDeliveryDate) + (p.estDeliveryTime ? ` ${esc(p.estDeliveryTime)}` : '');
+  const box = (label, value) => `
+    <table class="box">
+      <tr><th>${label}</th></tr>
+      <tr><td class="val">${esc(value) || '&nbsp;'}</td></tr>
+    </table>`;
+
+  return `<!doctype html><html><head><meta charset="utf-8">
+<title>${esc(p.sppNo || 'Permit DO')}</title>
 <style>
-  * { box-sizing:border-box; margin:0; padding:0; }
-  body { font-family:Arial, sans-serif; font-size:10pt; color:#111; padding:18mm 16mm; }
-  .issuer h1 { font-size:13pt; font-weight:bold; letter-spacing:.3px; }
-  .issuer .addr { font-size:8pt; color:#333; line-height:1.4; margin-top:2px; max-width:340px; }
-  .brbox { border-collapse:collapse; font-size:9pt; }
-  .brbox td { border:1px solid #000; padding:3px 8px; }
-  .brbox td.k { font-weight:bold; background:#f2f2f2; }
-  .title { text-align:center; font-size:12pt; font-weight:bold; letter-spacing:1px;
-           text-transform:uppercase; margin:14px 0 14px; }
-  table.fields { width:100%; border-collapse:collapse; margin-top:8px; }
-  table.fields td { border:1px solid #000; padding:7px 10px; font-size:10pt; vertical-align:top; }
-  table.fields td.k { font-weight:bold; background:#f7f7f7; width:210px; }
-  .note { margin-top:14px; font-size:9pt; line-height:1.7; }
-  .foot { margin-top:48px; width:100%; table-layout:fixed; border-collapse:collapse; }
-  .foot td { width:50%; text-align:center; vertical-align:top; font-size:9pt; }
-  .foot .gap td { height:56px; }
-  .foot .nm td { font-weight:bold; padding-top:3px; }
-  .foot .role td { border-top:1px solid #000; padding-top:3px; }
-  @page { size:A4; margin:14mm; }
-</style></head><body>
-
-  <table style="width:100%;border-collapse:collapse;margin-bottom:6px"><tr>
-    <td style="vertical-align:middle">
-      <div class="issuer">
-        <h1>${issuer.name}</h1>
-        <div class="addr">${(issuer.addrLines||[]).join('<br>')}</div>
-      </div>
-    </td>
-    <td style="vertical-align:middle;text-align:center;width:120px">
-      ${issuer.logo ? `<img src="${issuer.logo}" style="height:44px;width:auto" />` : ''}
-    </td>
-    <td style="vertical-align:middle;text-align:right;width:250px">
-      <table class="brbox" style="margin-left:auto">
-        <tr><td class="k">Ref. No</td><td>${sppNo || '-'}</td></tr>
-        <tr><td class="k">Date</td><td>${fmtDate(printDate)}</td></tr>
+  @page { size: A4; margin: 16mm 16mm 14mm; }
+  * { box-sizing: border-box; }
+  body { font-family: Arial, Helvetica, sans-serif; color: #000; font-size: 13px; margin: 0; }
+  .head { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; }
+  .co { flex: 1; }
+  .co h1 { font-size: 23px; margin: 4px 0 14px; letter-spacing: .3px; white-space: nowrap; }
+  .co .addr { font-size: 12.5px; line-height: 1.75; text-transform: uppercase; }
+  .right { width: 260px; flex-shrink: 0; display: flex; flex-direction: column; align-items: flex-end; }
+  .right img { max-height: 64px; max-width: 240px; margin-bottom: 16px; }
+  table { border-collapse: collapse; }
+  .num { width: 260px; }
+  .num td { border: 1.5px solid #000; padding: 7px 8px; font-size: 13px; white-space: nowrap; }
+  .num td:first-child { width: 1%; }
+  .boxes { display: flex; justify-content: space-between; gap: 32px; margin-top: 52px; }
+  .col { width: 46%; }
+  .box { width: 100%; border: 1.5px solid #000; }
+  .box + .box { border-top: none; }
+  .box th { text-align: left; font-size: 14px; padding: 8px 8px; border-bottom: 1.5px solid #000; }
+  .box td.val { padding: 8px 8px 30px; font-size: 13.5px; text-transform: uppercase; }
+  .items { width: 100%; margin-top: 30px; }
+  .items th, .items td { border: 1.5px solid #000; padding: 8px 10px; }
+  .items th { font-size: 15px; text-align: center; }
+  .items td.c { text-align: center; }
+  .items td.desc { text-transform: uppercase; }
+  .meta { margin-top: 16px; line-height: 1.9; font-size: 14px; padding-left: 4px; }
+  .meta b { font-weight: 700; }
+  .sign { display: flex; justify-content: space-between; margin-top: 90px; padding: 0 4px; }
+  .sign > div { width: 22%; font-size: 14px; }
+  .sign .line { margin-top: 84px; border-top: 1px solid #000; width: 100%; }
+  @media screen { body { padding: 16mm; max-width: 210mm; margin: 0 auto; } }
+</style></head>
+<body>
+  <div class="head">
+    <div class="co">
+      <h1>${esc(lh.name)}</h1>
+      <div class="addr">${(lh.addressLines || []).map(esc).join('<br>')}</div>
+    </div>
+    <div class="right">
+      ${p.issuerLogo ? `<img src="${esc(p.issuerLogo)}" alt="">` : ''}
+      <table class="num">
+        <tr><td>SPP. No</td><td>${esc(p.sppNo) || '&nbsp;'}</td></tr>
+        <tr><td>SPP. Date</td><td>${fmtDate(p.sppDate)}</td></tr>
       </table>
-    </td>
-  </tr></table>
+    </div>
+  </div>
 
-  <div class="title">Delivery Order</div>
+  <div class="boxes">
+    <div class="col">
+      ${box('Delivery To', p.deliveryTo)}
+      ${box('Vessel Name', p.supplyVessel)}
+    </div>
+    <div class="col">
+      ${box('Delivery Location', p.portDestination)}
+    </div>
+  </div>
 
-  <table class="fields">
-    <tr>
-      <td class="k">Estimated Delivery Date</td>
-      <td>${fmtDate(estDeliveryDate)}</td>
-    </tr>
-    <tr>
-      <td class="k">Product</td>
-      <td>${product || '-'}</td>
-    </tr>
-    <tr>
-      <td class="k">Quantity</td>
-      <td>${fmtL(quantityL)} Liter</td>
-    </tr>
-    <tr>
-      <td class="k">Port Loading</td>
-      <td>${portLoading || '-'}</td>
-    </tr>
-    <tr>
-      <td class="k">Port Destination</td>
-      <td>${portDestination || '-'}</td>
-    </tr>
-    <tr>
-      <td class="k">Supply Vessel</td>
-      <td>${supplyVessel || '-'}</td>
-    </tr>
-    <tr>
-      <td class="k">Reference Number</td>
-      <td>${referenceNo || '-'}</td>
-    </tr>
+  <table class="items">
+    <tr><th style="width:15%">No</th><th style="width:43%">Description</th><th>Qty (Liters)</th></tr>
+    <tr><td class="c">1</td><td class="desc">${esc(p.product) || '&nbsp;'}</td><td class="c">${fmtQty(p.quantityL)}</td></tr>
   </table>
 
-  ${note ? `<div class="note"><b>Note :</b> ${note}</div>` : ''}
+  <div class="meta">
+    <div><b>Estimate Delivery Date :</b> ${est}</div>
+    <div><b>Note :</b> ${esc(p.note) || '-'}</div>
+  </div>
 
-  <table class="foot">
-    <tr class="lbl"><td></td><td>Recipient,</td></tr>
-    <tr class="gap"><td></td><td></td></tr>
-    <tr class="nm"><td></td><td>${recipientName || ''}</td></tr>
-    <tr class="role"><td></td><td>Recipient</td></tr>
-  </table>
-
+  <div class="sign">
+    <div>Issued By,<div class="line"></div></div>
+    <div>Approved By,<div class="line"></div></div>
+    <div>Delivery By,<div class="line"></div></div>
+    <div>Received By,<div class="line"></div></div>
+  </div>
 </body></html>`;
 }
