@@ -3,7 +3,7 @@ import { T, s } from '../tokens';
 import { COL, PPN_PCT } from '../config';
 import { useCollection } from './useCollection';
 import { canCommercial } from '../roles';
-import { usePagination, PaginationBar, useIsNarrow, useSort, SortHeader, StatusPill } from './listUtils';
+import { usePagination, PaginationBar, useIsNarrow, useSort, SortHeader, StatusPill, MobileSortBar } from './listUtils';
 
 // Commercial pricing-control module. Lists DELIVERED (non-cancelled) DOs with the
 // observed-liter received quantity from their BAST, and lets commercial/director/superadmin
@@ -200,7 +200,7 @@ export default function Invoicing({ role, user }) {
     });
   }, [filteredRows]);
 
-  const { sorted, sortKey, sortDir, toggle } = useSort(baseRows, sortCols);
+  const { sorted, sortKey, sortDir, toggle, setSort } = useSort(baseRows, sortCols);
   const pg = usePagination(sorted, 20);
 
   // Only rows that have a BAST (hence a DO + observed qty) can be priced/selected.
@@ -504,6 +504,8 @@ export default function Invoicing({ role, user }) {
       ) : narrow ? (
         // -------- Mobile: stacked cards --------
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <MobileSortBar sortKey={sortKey} sortDir={sortDir} setSort={setSort}
+            options={[{ key: 'soNumber', label: 'SO number' }, { key: 'poRef', label: 'PO ref' }, { key: 'soDate', label: 'SO date' }, { key: 'bastDate', label: 'BAST date' }, { key: 'client', label: 'Client' }, { key: 'vessel', label: 'Vessel' }, { key: 'status', label: 'Status' }, { key: 'qty', label: 'Qty' }, { key: 'subtotal', label: 'Subtotal' }, { key: 'priced', label: 'Priced' }]} />
           {pg.pageRows.map(r => (
             <div key={r.id} style={{ ...s.card, padding: 14, opacity: r.hasBast ? 1 : 0.6 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>

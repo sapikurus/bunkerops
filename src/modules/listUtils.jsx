@@ -212,7 +212,36 @@ export function useSort(rows, columns, initial = {}) {
     });
   }, [rows, sortKey, sortDir, columns]);
 
-  return { sorted, sortKey, sortDir, toggle };
+  // Direct setter (used by the mobile sort bar; key null = default order).
+  const setSort = (key, dir = 'asc') => { setSortKey(key || null); setSortDir(dir); };
+
+  return { sorted, sortKey, sortDir, toggle, setSort };
+}
+
+// ---------------------------------------------------------------------------
+// MobileSortBar — the phone equivalent of clickable SortHeaders. Card views
+// have no column headers, so this offers a "Sort by" picker + direction toggle
+// driven by the same useSort state the desktop table uses.
+//   options: [{ key, label }]  (same keys as the useSort columns)
+// ---------------------------------------------------------------------------
+export function MobileSortBar({ options, sortKey, sortDir, setSort }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+      <span style={{ fontSize: 10, color: T.textDim, letterSpacing: 1, whiteSpace: 'nowrap' }}>SORT BY</span>
+      <select value={sortKey || ''} onChange={e => setSort(e.target.value || null, 'asc')}
+        style={{ ...s.input, flex: 1, fontSize: 12 }}>
+        <option value="">Default order</option>
+        {options.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+      </select>
+      <button type="button" disabled={!sortKey}
+        onClick={() => setSort(sortKey, sortDir === 'asc' ? 'desc' : 'asc')}
+        title={sortDir === 'asc' ? 'Ascending — tap for descending' : 'Descending — tap for ascending'}
+        style={{ ...s.btn('ghost'), padding: '6px 12px', fontSize: 12, opacity: sortKey ? 1 : 0.4,
+          color: sortKey ? T.amber : T.textDim }}>
+        {sortDir === 'asc' ? '▲' : '▼'}
+      </button>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@ import { buildDOHtml } from './doGen';
 import VolumeInput from './VolumeInput';
 import { USI_LOGO, PPS_LOGO } from './assets';
 import { makeQR } from './qr';
-import { usePagination, PaginationBar, useIsNarrow, diffSOtoDO, diffDOtoBAST, useSort, SortHeader, StatusPill } from './listUtils';
+import { usePagination, PaginationBar, useIsNarrow, diffSOtoDO, diffDOtoBAST, useSort, SortHeader, StatusPill, MobileSortBar } from './listUtils';
 
 const DO_STATUS_COLORS = {
   issued: T.blue, delivered: '#a855f7', cancelled: T.red,
@@ -75,7 +75,7 @@ export default function DeliveryOrders() {
     });
   }, [doC.data]);
 
-  const { sorted: userSorted, sortKey, sortDir, toggle } = useSort(baseDOs, sortCols);
+  const { sorted: userSorted, sortKey, sortDir, toggle, setSort } = useSort(baseDOs, sortCols);
   const sortedDOs = useMemo(() => {
     return [...userSorted].sort((a, b) =>
       (a.status === 'cancelled' ? 1 : 0) - (b.status === 'cancelled' ? 1 : 0));
@@ -295,13 +295,34 @@ export default function DeliveryOrders() {
     openPrint(html);
   };
 
+  // Delete a DO together with its BAST so nothing is left orphaned.
+  // - A BLANK BAST is deleted along with the DO.
+  // - A FILLED BAST blocks the delete: fuel was delivered and signed for, so the
+  //   record must not vanish silently. Reopen or delete the BAST deliberately first.
   const del = async (d) => {
-    const willRevert = d.status !== 'cancelled';
-    if (!confirm(`Delete DO ${d.brNo}?` + (willRevert ? ` The sales request will revert to 'requested'.` : ''))) return;
-    await doC.remove(d.id);
-    // Only revert the SO if this DO wasn't cancelled (a cancelled DO's SO is
-    // itself cancelled — don't resurrect it to 'requested').
-    if (d.salesRequestId && willRevert) await srC.update(d.salesRequestId, { status: 'requested' });
+    const theBAST = bastC.data.find(b => b.deliveryOrderId === d.id) || null;
+    if (theBAST && theBAST.status !== 'blank') {
+      alert(`Cannot delete ${d.brNo}: its BAST ${theBAST.nomorBast} is already filled (delivery recorded).\n\n` +
+        `Reopen the BAST (supervisor+) or delete it on the BAST page first, then delete this DO.`);
+      return;
+    }
+    const so = d.salesRequestId ? srC.data.find(r => r.id === d.salesRequestId) : null;
+    const willRevert = !!so && d.status !== 'cancelled';
+    if (!confirm(
+      `Delete DO ${d.brNo}?` +
+      (theBAST ? `\n\nIts blank BAST ${theBAST.nomorBast} will also be deleted.` : '') +
+      (willRevert ? `\n\nSales order ${so.soNumber || ''} will revert to 'requested'.` : '')
+    )) return;
+    try {
+      // Child first, so a failure part-way never leaves a BAST without its DO.
+      if (theBAST) await bastC.remove(theBAST.id);
+      await doC.remove(d.id);
+      // Only revert an SO that still exists and wasn't cancelled (a cancelled
+      // DO's SO is itself cancelled — don't resurrect it to 'requested').
+      if (willRevert) await srC.update(so.id, { status: 'requested' });
+    } catch (e) {
+      alert('Error deleting DO: ' + e.message);
+    }
   };
 
   const fmtL = n => (Number(n) || 0).toLocaleString('id-ID');
@@ -478,6 +499,8 @@ export default function DeliveryOrders() {
       ) : narrow ? (
         // -------- Mobile: stacked cards --------
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <MobileSortBar sortKey={sortKey} sortDir={sortDir} setSort={setSort}
+            options={[{ key: 'brNo', label: 'DO number' }, { key: 'date', label: 'Date' }, { key: 'soRef', label: 'SO ref' }, { key: 'deliverTo', label: 'Deliver to' }, { key: 'vessel', label: 'Vessel' }, { key: 'dispatched', label: 'Dispatched' }, { key: 'status', label: 'Status' }]} />
           {pg.pageRows.map(d => (
             <div key={d.id} style={{ ...s.card, padding: 14 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 6 }}>

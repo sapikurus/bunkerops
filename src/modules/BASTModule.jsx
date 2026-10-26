@@ -6,7 +6,7 @@ import { buildBASTHtml } from './bastGen';
 import VolumeInput from './VolumeInput';
 import { USI_LOGO } from './assets';
 import { makeQR } from './qr';
-import { usePagination, PaginationBar, useIsNarrow, diffDOtoBAST, useSort, SortHeader, StatusPill } from './listUtils';
+import { usePagination, PaginationBar, useIsNarrow, diffDOtoBAST, useSort, SortHeader, StatusPill, MobileSortBar } from './listUtils';
 
 // BAST status → pill color/label. Completed BASTs are the only ones in the
 // bottom list; blank ones live in the strip above.
@@ -20,7 +20,11 @@ const bastPill = (b) => b.status === 'blank'
 const APPROVER_ROLES = ['superadmin', 'director', 'supervisor'];
 const isApprover = (role) => APPROVER_ROLES.includes(role);
 
-const todayISO = () => new Date().toISOString().slice(0, 10);
+// Today's date in LOCAL time (toISOString is UTC — before 07:00 WIB it gave yesterday).
+const todayISO = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 const INDO_MONTHS = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
 const INDO_DAYS = ['Minggu','Senin','Selasa','Rabu','Kamis','Jumat','Sabtu'];
 
@@ -40,6 +44,7 @@ export default function BASTModule({ role }) {
   const approver = isApprover(role); // supervisor / director / superadmin — may reopen
   const bastC = useCollection(COL.bast);
   const doC   = useCollection(COL.deliveryOrders);
+  const srC   = useCollection(COL.salesRequests);   // for the client PO reference
 
   const [form, setForm]     = useState(null);
   const [editId, setEditId] = useState(null);
@@ -79,6 +84,21 @@ export default function BASTModule({ role }) {
       });
   }, [bastC.data]);
 
+  // Client PO reference per BAST: BAST → its DO → that DO's sales order.
+  // Falls back to the PO stored on the DO itself.
+  const poRefByBast = useMemo(() => {
+    const doMap = {}; for (const d of doC.data) doMap[d.id] = d;
+    const soMap = {}; for (const r of srC.data) soMap[r.id] = r;
+    const m = {};
+    for (const b of bastC.data) {
+      const d = doMap[b.deliveryOrderId];
+      const so = d ? soMap[d.salesRequestId] : null;
+      m[b.id] = so?.galleyPoRef || d?.clientPoRef || '';
+    }
+    return m;
+  }, [bastC.data, doC.data, srC.data]);
+  const poRefOf = (b) => poRefByBast[b.id] || '';
+
   // Sortable columns for the completed list.
   const sortCols = useMemo(() => ({
     nomorBast: b => bastSeq(b),
@@ -86,10 +106,11 @@ export default function BASTModule({ role }) {
     client:    b => b.recipient?.entityName || '',
     vessel:    b => b.recipient?.vesselName || '',
     doRef:     b => b.supplier?.deliveryOrder || '',
+    poRef:     b => poRefByBast[b.id] || '',
     received:  b => Number(b.qty?.volumeObserved ?? b.qty?.literStandard) || 0,
     loss:      b => Number(b.transitLossL) || 0,
-  }), []);
-  const { sorted: sortedBASTs, sortKey, sortDir, toggle } = useSort(completedBASTs, sortCols);
+  }), [poRefByBast]);
+  const { sorted: sortedBASTs, sortKey, sortDir, toggle, setSort } = useSort(completedBASTs, sortCols);
 
   const pg      = usePagination(sortedBASTs, 20);  // completed list pager
   const blankPg = usePagination(blankBASTs, 20);   // independent blank-strip pager
@@ -109,7 +130,8 @@ export default function BASTModule({ role }) {
 
   const startEdit = (b) => {
     const copy = JSON.parse(JSON.stringify(b));
-    if (b.status === 'blank') copy.tanggalBast = todayISO();
+    // Keep the last recorded date (set when the blank was printed); today only if none.
+    if (!copy.tanggalBast) copy.tanggalBast = todayISO();
     setForm(copy); setEditId(b.id);
   };
   const cancel = () => { setForm(null); setEditId(null); };
@@ -224,9 +246,45 @@ export default function BASTModule({ role }) {
     openPrint(html);
   };
 
+  // A BAST whose DO no longer exists (e.g. left behind by an older delete).
+  const isOrphan = (b) => !!b.deliveryOrderId && !doC.loading && !doById[b.deliveryOrderId];
+
+  // PRINT BLANK: the printed date is the day it is printed. The new date is saved
+  // on the BAST (so a later reprint updates it again), and the FILL form then
+  // starts from this last recorded date.
+  const printBlank = async (b) => {
+    const today = todayISO();
+    let toPrint = b;
+    if (b.tanggalBast !== today) {
+      const d = new Date(today + 'T00:00:00');
+      const stamp = {
+        tanggalBast: today,
+        tanggalBastText: `${d.getDate()} ${INDO_MONTHS[d.getMonth()]} ${d.getFullYear()}`,
+        hari: INDO_DAYS[d.getDay()],
+      };
+      toPrint = { ...b, ...stamp };
+      try {
+        await bastC.update(b.id, stamp);
+      } catch (e) {
+        alert(`Printed with today's date, but couldn't save it on BAST ${b.nomorBast}: ${e.message}`);
+      }
+    }
+    await printBAST(toPrint);
+  };
+
   const del = async (b) => {
-    if (!confirm(`Delete BAST ${b.nomorBast}?`)) return;
-    await bastC.remove(b.id);
+    const msg = isOrphan(b)
+      ? `Delete orphaned BAST ${b.nomorBast}? Its delivery order no longer exists.`
+      : `Delete BAST ${b.nomorBast}?` + (b.status !== 'blank'
+          ? `\n\nThis BAST is FILLED (delivery recorded). Deleting it removes the delivery record. Continue?`
+          : '');
+    if (!confirm(msg)) return;
+    try {
+      await bastC.remove(b.id);
+    } catch (e) {
+      alert(`Could not delete BAST ${b.nomorBast}: ${e.message}` +
+        (/permission/i.test(e.message) ? '\n\nDeleting a BAST needs supervisor, director or superadmin.' : ''));
+    }
   };
 
   // Reopen a completed BAST → back to 'blank' so it re-enters the fill queue for
@@ -313,12 +371,13 @@ export default function BASTModule({ role }) {
                     </div>
                   </div>
                   <div style={{ fontSize: 12 }}>
-                    <span style={{ color: T.amber, fontFamily: T.font, fontSize: 11 }}>{b.nomorBast}</span>
-                    <span style={{ color: T.textDim }}> · {b.tanggalBast} · DO {b.supplier?.deliveryOrder} · {clientOf(b)} · {vesselOf(b)} · {fmtL(b.dispatchedVolumeL)} L</span>
+                    <span style={{ color: T.amber, fontFamily: T.font, fontSize: 11 }}>{b.nomorBast}</span>{isOrphan(b) && <span title="Its delivery order no longer exists — safe to delete" style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, color: T.red, border: `1px solid ${T.red}`, borderRadius: 3, padding: '0 4px' }}>ORPHAN — DO DELETED</span>}
+                    <span style={{ color: T.textDim }}> · {b.tanggalBast} · DO {b.supplier?.deliveryOrder} · PO {poRefOf(b) || '—'} · {clientOf(b)} · {vesselOf(b)} · {fmtL(b.dispatchedVolumeL)} L</span>
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                  <button onClick={() => printBAST(b)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10 }}>
+                  <button onClick={() => printBlank(b)} title="Prints with today's date and saves it on this BAST"
+                    style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10 }}>
                     PRINT BLANK
                   </button>
                   <button onClick={() => startEdit(b)} style={{ ...s.btn('primary'), padding: '5px 14px', fontSize: 10 }}>
@@ -505,19 +564,25 @@ export default function BASTModule({ role }) {
       ) : narrow ? (
         // -------- Mobile: stacked cards --------
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <MobileSortBar sortKey={sortKey} sortDir={sortDir} setSort={setSort}
+            options={[{ key: 'nomorBast', label: 'BAST number' }, { key: 'date', label: 'Date' }, { key: 'poRef', label: 'Client PO ref' }, { key: 'client', label: 'Client' }, { key: 'vessel', label: 'Vessel' }, { key: 'doRef', label: 'DO ref' }, { key: 'received', label: 'Received' }, { key: 'loss', label: 'Transit loss' }]} />
           {pg.pageRows.map(b => {
             const diffs = diffsForBAST(b);
             return (
               <div key={b.id} style={{ ...s.card, padding: 14 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                  <span style={{ fontFamily: T.font, color: T.amber, fontSize: 11 }}>{b.nomorBast}</span>
-                  <StatusPill {...bastPill(b)} />
+                  <span style={{ fontFamily: T.font, color: T.amber, fontSize: 11 }}>{b.nomorBast}</span>{isOrphan(b) && <span title="Its delivery order no longer exists — safe to delete" style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, color: T.red, border: `1px solid ${T.red}`, borderRadius: 3, padding: '0 4px' }}>ORPHAN — DO DELETED</span>}
+                  <span title={b.status === 'blank' ? 'Blank (pre-bunker)' : 'Completed'}
+                    style={{ color: b.status === 'blank' ? T.textFaint : T.green, fontSize: 15, fontWeight: 700 }}>
+                    {b.status === 'blank' ? '○' : '✓'}
+                  </span>
                 </div>
                 <div style={{ fontSize: 13, color: T.text }}>{clientOf(b)}</div>
                 <div style={{ fontSize: 11, color: T.textDim, display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
                   <span>{b.tanggalBast}</span>
                   <span>· {vesselOf(b)}</span>
                   <span style={{ fontFamily: T.font }}>· DO {b.supplier?.deliveryOrder || '—'}</span>
+                  <span style={{ fontFamily: T.font, color: T.text }}>· PO {poRefOf(b) || '—'}</span>
                 </div>
                 <div style={{ fontSize: 11, color: T.textDim, display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
                   <span>Received: <span style={{ fontFamily: T.font, color: T.text }}>{b.status === 'blank' ? '—' : fmtL(b.qty?.volumeObserved ?? b.qty?.literStandard)}</span></span>
@@ -559,10 +624,11 @@ export default function BASTModule({ role }) {
               <tr>
                 <SortHeader label="BAST NUMBER" colKey="nomorBast" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
                 <SortHeader label="DATE" colKey="date" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
+                <SortHeader label="CLIENT PO" colKey="poRef" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
                 <SortHeader label="CLIENT" colKey="client" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
                 <SortHeader label="VESSEL" colKey="vessel" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
                 <SortHeader label="DO REF" colKey="doRef" sortKey={sortKey} sortDir={sortDir} onSort={toggle} />
-                <th style={s.th}>STATUS</th>
+                <th style={{ ...s.th, textAlign: 'center', width: 32 }} title="Completed">✓</th>
                 <SortHeader label="RECEIVED (L)" colKey="received" sortKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
                 <SortHeader label="TRANSIT LOSS" colKey="loss" sortKey={sortKey} sortDir={sortDir} onSort={toggle} align="right" />
                 <th style={s.th}></th>
@@ -575,14 +641,19 @@ export default function BASTModule({ role }) {
                   <tr key={b.id}>
                     <td style={{ ...s.td, fontFamily: T.font, color: T.amber, fontSize: 11 }}>
                       {b.nomorBast}
+                      {isOrphan(b) && <span title="Its delivery order no longer exists — safe to delete" style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, color: T.red, border: `1px solid ${T.red}`, borderRadius: 3, padding: '0 4px' }}>ORPHAN — DO DELETED</span>}
                       {diffs.length > 0 && <span title={`Differs from DO (${diffs.length} field(s))`} style={{ color: T.amber, marginLeft: 6 }}>⚠</span>}
                     </td>
                     <td style={s.td}>{b.tanggalBast}</td>
+                    <td style={{ ...s.td, fontFamily: T.font, fontSize: 10, color: T.text }}>{poRefOf(b) || '—'}</td>
                     <td style={s.td}>{clientOf(b)}</td>
                     <td style={s.td}>{vesselOf(b)}</td>
                     <td style={{ ...s.td, fontFamily: T.font, fontSize: 10 }}>{b.supplier?.deliveryOrder}</td>
-                    <td style={s.td}>
-                      <StatusPill {...bastPill(b)} />
+                    <td style={{ ...s.td, textAlign: 'center' }}>
+                      <span title={b.status === 'blank' ? 'Blank (pre-bunker)' : 'Completed'}
+                        style={{ color: b.status === 'blank' ? T.textFaint : T.green, fontSize: 15, fontWeight: 700 }}>
+                        {b.status === 'blank' ? '○' : '✓'}
+                      </span>
                     </td>
                     <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font }}>
                       {b.status === 'blank' ? '—' : fmtL(b.qty?.volumeObserved ?? b.qty?.literStandard)}

@@ -5,7 +5,7 @@ import { useCollection } from './useCollection';
 import { allocateNumber } from './counters';
 import VolumeInput from './VolumeInput';
 import { useFuelOpsMaster } from './useFuelOpsMaster';
-import { usePagination, PaginationBar, useIsNarrow, diffSOtoDO, useSort, SortHeader, StatusPill } from './listUtils';
+import { usePagination, PaginationBar, useIsNarrow, diffSOtoDO, useSort, SortHeader, StatusPill, MobileSortBar } from './listUtils';
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
@@ -106,7 +106,7 @@ export default function SalesRequests() {
     });
   }, [filteredRows]);
 
-  const { sorted: userSorted, sortKey, sortDir, toggle } = useSort(baseRows, sortCols);
+  const { sorted: userSorted, sortKey, sortDir, toggle, setSort } = useSort(baseRows, sortCols);
   // Keep cancelled at the bottom on top of whatever sort is active.
   const sortedRows = useMemo(() => {
     return [...userSorted].sort((a, b) => {
@@ -183,9 +183,33 @@ export default function SalesRequests() {
     cancel();
   };
 
+  // Delete an SO together with its DO and blank BAST so nothing is orphaned.
+  // Blocked when the BAST is already filled — the delivery happened, so the
+  // record must not vanish silently. (Use CANCEL for client cancellations.)
   const del = async (r) => {
-    if (!confirm('Delete this sales order?')) return;
-    await sr.remove(r.id);
+    const theDOs  = doC.data.filter(d => d.salesRequestId === r.id);
+    const theBASTs = bastC.data.filter(b => theDOs.some(d => d.id === b.deliveryOrderId));
+    const filled = theBASTs.find(b => b.status !== 'blank');
+    if (filled) {
+      alert(`Cannot delete ${r.soNumber}: BAST ${filled.nomorBast} is already filled (delivery recorded).\n\n` +
+        `Reopen the BAST (supervisor+) or delete it on the BAST page first. ` +
+        `For a client cancellation, use CANCEL instead.`);
+      return;
+    }
+    if (!confirm(
+      `Delete sales order ${r.soNumber || ''}?` +
+      (theDOs.length ? `\n\nThis also deletes DO ${theDOs.map(d => d.brNo).join(', ')}` +
+        (theBASTs.length ? ` and blank BAST ${theBASTs.map(b => b.nomorBast).join(', ')}` : '') + '.' : '') +
+      `\n\nThis cannot be undone.`
+    )) return;
+    try {
+      // Children first, so a failure part-way never leaves orphans behind.
+      for (const b of theBASTs) await bastC.remove(b.id);
+      for (const d of theDOs)   await doC.remove(d.id);
+      await sr.remove(r.id);
+    } catch (e) {
+      alert('Error deleting sales order: ' + e.message);
+    }
   };
 
   // Cancel an SO (e.g. client cancellation). Cascades: its DO → 'cancelled',
@@ -408,6 +432,8 @@ export default function SalesRequests() {
       ) : narrow ? (
         // -------- Mobile: stacked cards --------
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <MobileSortBar sortKey={sortKey} sortDir={sortDir} setSort={setSort}
+            options={[{ key: 'soNumber', label: 'SO number' }, { key: 'poRef', label: 'PO ref' }, { key: 'date', label: 'Date' }, { key: 'client', label: 'Client / entity' }, { key: 'vessel', label: 'Vessel' }, { key: 'scheme', label: 'Scheme' }, { key: 'fuel', label: 'Fuel' }, { key: 'volume', label: 'Volume' }, { key: 'status', label: 'Status' }]} />
           {pg.pageRows.map(r => (
             <div key={r.id} style={{ ...s.card, padding: 14 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 6 }}>
