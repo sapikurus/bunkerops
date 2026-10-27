@@ -53,6 +53,25 @@ export default function BASTModule({ role }) {
 
   const narrow = useIsNarrow();
 
+  // Void state per BAST, derived from its DO and SO (display only, no writes):
+  //   'deleted'   — the DO no longer exists (e.g. deleted before the cascade fix)
+  //   'cancelled' — the DO or its sales order is cancelled
+  // Voided BASTs leave the fill queue and show in the bottom list as ✗ / !.
+  const voidOf = useMemo(() => {
+    if (doC.loading || srC.loading) return {};
+    const doMap = {}; for (const d of doC.data) doMap[d.id] = d;
+    const soMap = {}; for (const r of srC.data) soMap[r.id] = r;
+    const m = {};
+    for (const b of bastC.data) {
+      if (!b.deliveryOrderId) continue;
+      const d = doMap[b.deliveryOrderId];
+      if (!d) { m[b.id] = 'deleted'; continue; }
+      const so = d.salesRequestId ? soMap[d.salesRequestId] : null;
+      if (d.status === 'cancelled' || so?.status === 'cancelled') m[b.id] = 'cancelled';
+    }
+    return m;
+  }, [bastC.data, doC.data, srC.data, doC.loading, srC.loading]);
+
   // Blank BASTs awaiting fill — OLDEST first (longest-waiting surfaces at top),
   // tiebreak by sequence number ascending.
   // Blank BASTs awaiting fill. Ordering: items with an explicit `priority` come
@@ -61,7 +80,7 @@ export default function BASTModule({ role }) {
   const blankBASTs = useMemo(() => {
     const hasP = b => b.priority !== undefined && b.priority !== null && b.priority !== '';
     return bastC.data
-      .filter(b => b.status === 'blank')
+      .filter(b => b.status === 'blank' && !voidOf[b.id])
       .sort((a, b) => {
         const ap = hasP(a), bp = hasP(b);
         if (ap && bp) return Number(a.priority) - Number(b.priority);
@@ -70,19 +89,19 @@ export default function BASTModule({ role }) {
         if (d !== 0) return d;
         return bastSeq(a) - bastSeq(b);
       });
-  }, [bastC.data]);
+  }, [bastC.data, voidOf]);
 
   // Bottom list is COMPLETED (filled) BASTs only — newest first, seq desc tiebreak.
   // Blank ones live only in the strip above, so the two sections never overlap.
   const completedBASTs = useMemo(() => {
     return bastC.data
-      .filter(b => b.status !== 'blank')
+      .filter(b => b.status !== 'blank' || !!voidOf[b.id])
       .sort((a, b) => {
         const d = String(b.tanggalBast || '').localeCompare(String(a.tanggalBast || ''));
         if (d !== 0) return d;
         return bastSeq(b) - bastSeq(a);
       });
-  }, [bastC.data]);
+  }, [bastC.data, voidOf]);
 
   // Client PO reference per BAST: BAST → its DO → that DO's sales order.
   // Falls back to the PO stored on the DO itself.
@@ -247,7 +266,33 @@ export default function BASTModule({ role }) {
   };
 
   // A BAST whose DO no longer exists (e.g. left behind by an older delete).
-  const isOrphan = (b) => !!b.deliveryOrderId && !doC.loading && !doById[b.deliveryOrderId];
+  const isOrphan = (b) => voidOf[b.id] === 'deleted';
+
+  // Small tag next to the BAST number for voided BASTs.
+  const voidBadge = (b) => {
+    const v = voidOf[b.id];
+    if (!v) return null;
+    const c = v === 'deleted' ? T.red : T.amber;
+    return (
+      <span title={v === 'deleted' ? 'Its delivery order no longer exists — safe to delete'
+                                   : 'Its delivery order / sales order is cancelled'}
+        style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, color: c, border: `1px solid ${c}`,
+          borderRadius: 3, padding: '0 4px' }}>
+        {v === 'deleted' ? 'DO DELETED' : 'CANCELLED'}
+      </span>
+    );
+  };
+
+  // Status mark: ✓ completed · ✗ DO deleted · ! cancelled · ○ blank.
+  const statusMark = (b) => {
+    const v = voidOf[b.id];
+    const [ch, color, title] =
+      v === 'deleted'   ? ['✗', T.red,   'Voided — delivery order deleted'] :
+      v === 'cancelled' ? ['!', T.amber, 'Voided — cancelled'] :
+      b.status === 'blank' ? ['○', T.textFaint, 'Blank (pre-bunker)'] :
+                          ['✓', T.green, 'Completed'];
+    return <span title={title} style={{ color, fontSize: 15, fontWeight: 700 }}>{ch}</span>;
+  };
 
   // PRINT BLANK: the printed date is the day it is printed. The new date is saved
   // on the BAST (so a later reprint updates it again), and the FILL form then
@@ -371,7 +416,7 @@ export default function BASTModule({ role }) {
                     </div>
                   </div>
                   <div style={{ fontSize: 12 }}>
-                    <span style={{ color: T.amber, fontFamily: T.font, fontSize: 11 }}>{b.nomorBast}</span>{isOrphan(b) && <span title="Its delivery order no longer exists — safe to delete" style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, color: T.red, border: `1px solid ${T.red}`, borderRadius: 3, padding: '0 4px' }}>ORPHAN — DO DELETED</span>}
+                    <span style={{ color: T.amber, fontFamily: T.font, fontSize: 11 }}>{b.nomorBast}</span>{voidBadge(b)}
                     <span style={{ color: T.textDim }}> · {b.tanggalBast} · DO {b.supplier?.deliveryOrder} · PO {poRefOf(b) || '—'} · {clientOf(b)} · {vesselOf(b)} · {fmtL(b.dispatchedVolumeL)} L</span>
                   </div>
                 </div>
@@ -555,7 +600,12 @@ export default function BASTModule({ role }) {
 
       {/* Completed BAST list */}
       <div style={{ fontSize: 10, color: T.textDim, letterSpacing: 1.5, margin: '4px 0 10px' }}>
-        COMPLETED BASTs
+        COMPLETED &amp; CLOSED BASTs
+        <span style={{ marginLeft: 10, letterSpacing: 0.5, color: T.textFaint }}>
+          <span style={{ color: T.green, fontWeight: 700 }}>✓</span> completed ·{' '}
+          <span style={{ color: T.red, fontWeight: 700 }}>✗</span> DO deleted ·{' '}
+          <span style={{ color: T.amber, fontWeight: 700 }}>!</span> cancelled
+        </span>
       </div>
       {bastC.loading ? (
         <div style={{ color: T.textDim, fontSize: 12 }}>Loading…</div>
@@ -567,15 +617,12 @@ export default function BASTModule({ role }) {
           <MobileSortBar sortKey={sortKey} sortDir={sortDir} setSort={setSort}
             options={[{ key: 'nomorBast', label: 'BAST number' }, { key: 'date', label: 'Date' }, { key: 'poRef', label: 'Client PO ref' }, { key: 'client', label: 'Client' }, { key: 'vessel', label: 'Vessel' }, { key: 'doRef', label: 'DO ref' }, { key: 'received', label: 'Received' }, { key: 'loss', label: 'Transit loss' }]} />
           {pg.pageRows.map(b => {
-            const diffs = diffsForBAST(b);
+            const diffs = voidOf[b.id] ? [] : diffsForBAST(b);
             return (
               <div key={b.id} style={{ ...s.card, padding: 14 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                  <span style={{ fontFamily: T.font, color: T.amber, fontSize: 11 }}>{b.nomorBast}</span>{isOrphan(b) && <span title="Its delivery order no longer exists — safe to delete" style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, color: T.red, border: `1px solid ${T.red}`, borderRadius: 3, padding: '0 4px' }}>ORPHAN — DO DELETED</span>}
-                  <span title={b.status === 'blank' ? 'Blank (pre-bunker)' : 'Completed'}
-                    style={{ color: b.status === 'blank' ? T.textFaint : T.green, fontSize: 15, fontWeight: 700 }}>
-                    {b.status === 'blank' ? '○' : '✓'}
-                  </span>
+                  <span style={{ fontFamily: T.font, color: T.amber, fontSize: 11 }}>{b.nomorBast}</span>{voidBadge(b)}
+                  {statusMark(b)}
                 </div>
                 <div style={{ fontSize: 13, color: T.text }}>{clientOf(b)}</div>
                 <div style={{ fontSize: 11, color: T.textDim, display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
@@ -596,17 +643,19 @@ export default function BASTModule({ role }) {
                   </div>
                 )}
                 <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
+                  {!voidOf[b.id] && <>
                   <button onClick={() => printBAST(b)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10 }}>PDF</button>
                   <button onClick={() => startEdit(b)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10 }}>
                     {b.status === 'blank' ? 'FILL' : 'EDIT'}
                   </button>
+                  </>}
                   {diffs.length > 0 && (
                     <button onClick={() => syncFromDO(b)} disabled={syncBusy[b.id]}
                       style={{ ...s.btn('primary'), padding: '5px 12px', fontSize: 10 }}>
                       {syncBusy[b.id] ? 'SYNCING…' : 'SYNC FROM DO'}
                     </button>
                   )}
-                  {approver && b.status !== 'blank' && (
+                  {approver && b.status !== 'blank' && !voidOf[b.id] && (
                     <button onClick={() => reopen(b)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10 }}>REOPEN</button>
                   )}
                   <button onClick={() => del(b)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10, color: T.red }}>DEL</button>
@@ -636,12 +685,12 @@ export default function BASTModule({ role }) {
             </thead>
             <tbody>
               {pg.pageRows.map(b => {
-                const diffs = diffsForBAST(b);
+                const diffs = voidOf[b.id] ? [] : diffsForBAST(b);
                 return (
                   <tr key={b.id}>
                     <td style={{ ...s.td, fontFamily: T.font, color: T.amber, fontSize: 11 }}>
                       {b.nomorBast}
-                      {isOrphan(b) && <span title="Its delivery order no longer exists — safe to delete" style={{ marginLeft: 6, fontSize: 9, fontWeight: 700, color: T.red, border: `1px solid ${T.red}`, borderRadius: 3, padding: '0 4px' }}>ORPHAN — DO DELETED</span>}
+                      {voidBadge(b)}
                       {diffs.length > 0 && <span title={`Differs from DO (${diffs.length} field(s))`} style={{ color: T.amber, marginLeft: 6 }}>⚠</span>}
                     </td>
                     <td style={s.td}>{b.tanggalBast}</td>
@@ -650,10 +699,7 @@ export default function BASTModule({ role }) {
                     <td style={s.td}>{vesselOf(b)}</td>
                     <td style={{ ...s.td, fontFamily: T.font, fontSize: 10 }}>{b.supplier?.deliveryOrder}</td>
                     <td style={{ ...s.td, textAlign: 'center' }}>
-                      <span title={b.status === 'blank' ? 'Blank (pre-bunker)' : 'Completed'}
-                        style={{ color: b.status === 'blank' ? T.textFaint : T.green, fontSize: 15, fontWeight: 700 }}>
-                        {b.status === 'blank' ? '○' : '✓'}
-                      </span>
+                      {statusMark(b)}
                     </td>
                     <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font }}>
                       {b.status === 'blank' ? '—' : fmtL(b.qty?.volumeObserved ?? b.qty?.literStandard)}
@@ -662,17 +708,19 @@ export default function BASTModule({ role }) {
                       {b.status === 'blank' ? '—' : fmtL(b.transitLossL)}
                     </td>
                     <td style={{ ...s.td, textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      {!voidOf[b.id] && <>
                       <button onClick={() => printBAST(b)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6 }}>PDF</button>
                       <button onClick={() => startEdit(b)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6 }}>
                         {b.status === 'blank' ? 'FILL' : 'EDIT'}
                       </button>
+                      </>}
                       {diffs.length > 0 && (
                         <button onClick={() => syncFromDO(b)} disabled={syncBusy[b.id]}
                           style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6, color: T.amber, borderColor: T.amber }}>
                           {syncBusy[b.id] ? 'SYNC…' : 'SYNC'}
                         </button>
                       )}
-                      {approver && b.status !== 'blank' && (
+                      {approver && b.status !== 'blank' && !voidOf[b.id] && (
                         <button onClick={() => reopen(b)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6 }}>REOPEN</button>
                       )}
                       <button onClick={() => del(b)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, color: T.red }}>DEL</button>
