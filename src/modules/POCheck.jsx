@@ -10,13 +10,18 @@
 // Cloud Function (sheet stays private; only the PO column is returned).
 // Fallback: load a CSV or paste the column — read locally, never uploaded.
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo } from 'react';
 import { httpsCallable } from 'firebase/functions';
 import { T, s } from '../tokens';
+import { SCHEMES } from '../config';
 import { functions } from '../firebase';
+import { buildModel, downloadXlsx, downloadPdf } from './poCheckExport';
 
 // Statuses that count as "bunkering completed".
 const DONE = ['bast_done', 'reconciled'];
+
+// Sales scheme of a Commercial row (rows carry cargo PPS / MBSS).
+const rowScheme = (r) => (r.cargo === 'MBSS' ? 'NON_PPS_SALE' : 'PPS_SALE');
 
 // Normalise a PO number so typing differences still match:
 //   PO48-2610-0010, P048-2610-0010, po48-2610-10  → P48-2610-10
@@ -81,8 +86,11 @@ export default function POCheck({ rows, onClose }) {
   const [sheetPOs, setSheetPOs] = useState(null);   // Set of normalised POs, or null
   const [source, setSource]     = useState('');
   const [paste, setPaste]       = useState('');
-  const [copied, setCopied]     = useState(false);
+  const [exporting, setExporting] = useState('');   // '' | 'xlsx' | 'pdf'
   const [fetching, setFetching] = useState(false);
+  // Filters — same idea as Sales Requests: scheme (default PPS Sale) + client group.
+  const [fScheme, setFScheme] = useState('PPS_SALE');
+  const [fClient, setFClient] = useState('');
   const [fetchErr, setFetchErr] = useState('');
   const [showManual, setShowManual] = useState(false);
 
@@ -90,7 +98,7 @@ export default function POCheck({ rows, onClose }) {
     const set = extractPOs(text);
     setSheetPOs(set);
     setSource(`${label} · ${set.size} PO number${set.size === 1 ? '' : 's'} found`);
-    setCopied(false); setFetchErr('');
+    setFetchErr('');
   };
 
   // Fetch the PO column straight from the shared sheet (no download needed).
@@ -102,7 +110,6 @@ export default function POCheck({ rows, onClose }) {
       setSheetPOs(set);
       const at = res.data?.fetchedAt ? new Date(res.data.fetchedAt).toLocaleString('id-ID') : '';
       setSource(`Live from shared sheet (${res.data?.tab || 'MASTER'}) · ${set.size} PO numbers · ${at}`);
-      setCopied(false);
     } catch (e) {
       // Callable errors carry a readable message from the function.
       setFetchErr(e?.message || String(e));
@@ -112,8 +119,19 @@ export default function POCheck({ rows, onClose }) {
     }
   };
 
-  // Fetch automatically when the panel opens.
-  useEffect(() => { fetchFromSheet(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Client-group choices (from the sales orders in the chosen scheme).
+  const clientOpts = useMemo(() => [...new Set(rows
+      .filter(r => !fScheme || rowScheme(r) === fScheme)
+      .map(r => r.client).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+    [rows, fScheme]);
+
+  // Rows in scope for the chosen scheme + client group.
+  const scopedRows = useMemo(() => rows.filter(r =>
+    (!fScheme || rowScheme(r) === fScheme) && (!fClient || r.client === fClient)),
+  [rows, fScheme, fClient]);
+
+  const schemeLabel = fScheme ? (SCHEMES[fScheme]?.label || fScheme) : 'All schemes';
+  const clientLabel = fClient || 'All client groups';
 
   const onFile = async (e) => {
     const f = e.target.files?.[0];
@@ -125,7 +143,7 @@ export default function POCheck({ rows, onClose }) {
   // Completed SOs, split into: has final PO / missing final PO / no PO in BunkerOps.
   const result = useMemo(() => {
     if (!sheetPOs) return null;
-    const done = rows.filter(r => DONE.includes(r.soStatus));
+    const done = scopedRows.filter(r => DONE.includes(r.soStatus));
     const matched = [], missing = [], noRef = [];
     for (const r of done) {
       const k = normPO(r.poRef);
@@ -137,16 +155,20 @@ export default function POCheck({ rows, onClose }) {
     const byDate = (a, b) => String(a.bastDate || '').localeCompare(String(b.bastDate || ''));
     missing.sort(byDate); noRef.sort(byDate);
     return { done: done.length, matched: matched.length, missing, noRef };
-  }, [rows, sheetPOs]);
+  }, [scopedRows, sheetPOs]);
 
-  const copyList = async () => {
-    if (!result) return;
-    const head = ['SO Number', 'PO Reference', 'Client', 'Vessel', 'BAST No', 'BAST Date', 'Qty (L)'];
-    const line = (r) => [r.soNumber, r.poRef || '-', [r.client, r.entity].filter(Boolean).join(' — '),
-      r.vessel, r.bastNo, r.bastDate, r.qty].join('\t');
-    const text = [head.join('\t'), ...result.missing.map(line), ...result.noRef.map(line)].join('\n');
-    try { await navigator.clipboard.writeText(text); setCopied(true); }
-    catch { alert('Could not copy — select the table and copy it manually.'); }
+  // Download the result as Excel or PDF (libraries load on first click).
+  const download = async (kind) => {
+    if (!result || exporting) return;
+    setExporting(kind);
+    try {
+      const model = buildModel(result, { schemeLabel, clientLabel, source });
+      if (kind === 'xlsx') await downloadXlsx(model); else await downloadPdf(model);
+    } catch (e) {
+      alert('Could not create the file: ' + (e?.message || e));
+    } finally {
+      setExporting('');
+    }
   };
 
   const table = (list, title, accent) => list.length === 0 ? null : (
@@ -183,14 +205,33 @@ export default function POCheck({ rows, onClose }) {
         <button onClick={onClose} style={{ ...s.btn('ghost'), padding: '2px 10px', fontSize: 10 }}>CLOSE</button>
       </div>
       <div style={{ fontSize: 11, color: T.textDim, lineHeight: 1.6, marginBottom: 12 }}>
-        Compares BAST-done sales orders with the final-PO list in the shared sheet (MASTER tab).
-        The PO column is read straight from the sheet — no download needed.
+        Choose the scheme and client group, then CHECK. Completed sales orders are compared with the
+        final-PO list in the shared sheet (MASTER tab), read straight from the sheet.
+      </div>
+
+      <div style={{ display: 'flex', gap: 14, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 12 }}>
+        <div>
+          <label style={s.label}>Scheme</label>
+          <select value={fScheme} onChange={e => { setFScheme(e.target.value); setFClient(''); }}
+            style={{ ...s.input, width: 240, fontSize: 11 }}>
+            {Object.values(SCHEMES).map(sc => <option key={sc.key} value={sc.key}>{sc.label}</option>)}
+            <option value="">All schemes</option>
+          </select>
+        </div>
+        <div>
+          <label style={s.label}>Client Group</label>
+          <select value={fClient} onChange={e => setFClient(e.target.value)}
+            style={{ ...s.input, width: 220, fontSize: 11 }}>
+            <option value="">All client groups</option>
+            {clientOpts.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
       </div>
 
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
         <button onClick={fetchFromSheet} disabled={fetching}
           style={{ ...s.btn('primary'), fontSize: 11, opacity: fetching ? 0.6 : 1 }}>
-          {fetching ? 'READING SHEET…' : '⟳ REFRESH FROM SHEET'}
+          {fetching ? 'READING SHEET…' : (sheetPOs ? '⟳ RE-CHECK (refresh sheet)' : '🔎 CHECK')}
         </button>
         <span onClick={() => setShowManual(v => !v)}
           style={{ fontSize: 10, color: T.textDim, cursor: 'pointer', textDecoration: 'underline' }}>
@@ -223,7 +264,10 @@ export default function POCheck({ rows, onClose }) {
 
       {result && (
         <>
-          <div style={{ fontSize: 10, color: T.textFaint, marginTop: 12 }}>{source}</div>
+          <div style={{ fontSize: 11, color: T.text, marginTop: 14 }}>
+            <b>{schemeLabel}</b> · <b>{clientLabel}</b>
+          </div>
+          <div style={{ fontSize: 10, color: T.textFaint, marginTop: 2 }}>{source}</div>
           <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', marginTop: 8, fontSize: 12 }}>
             <span>Completed SOs: <b>{result.done}</b></span>
             <span style={{ color: T.green }}>Final PO in sheet: <b>{result.matched}</b></span>
@@ -236,11 +280,18 @@ export default function POCheck({ rows, onClose }) {
             <>
               {table(result.missing, 'COMPLETED — FINAL PO NOT IN SHEET', T.red)}
               {table(result.noRef, 'COMPLETED — NO PO REFERENCE IN BUNKEROPS', T.amber)}
-              <button onClick={copyList} style={{ ...s.btn('ghost'), fontSize: 10, marginTop: 12 }}>
-                {copied ? '✓ COPIED' : 'COPY LIST (paste into Sheets / WhatsApp)'}
-              </button>
             </>
           )}
+          <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap' }}>
+            <button onClick={() => download('xlsx')} disabled={!!exporting}
+              style={{ ...s.btn('ghost'), fontSize: 11, color: T.green, borderColor: T.green, opacity: exporting ? 0.6 : 1 }}>
+              {exporting === 'xlsx' ? 'CREATING…' : '⬇ EXCEL'}
+            </button>
+            <button onClick={() => download('pdf')} disabled={!!exporting}
+              style={{ ...s.btn('ghost'), fontSize: 11, color: T.red, borderColor: T.red, opacity: exporting ? 0.6 : 1 }}>
+              {exporting === 'pdf' ? 'CREATING…' : '⬇ PDF'}
+            </button>
+          </div>
           {sheetPOs.size === 0 && (
             <div style={{ fontSize: 11, color: T.red, marginTop: 10 }}>
               No PO numbers were found in that file — check it is the MASTER tab with a "PO Reference" column.
