@@ -6,7 +6,10 @@ import { buildBASTHtml } from './bastGen';
 import VolumeInput from './VolumeInput';
 import { USI_LOGO } from './assets';
 import { makeQR } from './qr';
-import { usePagination, PaginationBar, useIsNarrow, diffDOtoBAST, useSort, SortHeader, StatusPill, MobileSortBar } from './listUtils';
+import { usePagination, PaginationBar, useIsNarrow, diffDOtoBAST, useSort, SortHeader, StatusPill, MobileSortBar,
+  ReasonDialog, useRefFilters, RefFilterInputs, DocLink, FocusBanner, cancelInfoLine } from './listUtils';
+import { canFill } from '../roles';
+import { auth } from '../firebase';
 
 // BAST status → pill color/label. Completed BASTs are the only ones in the
 // bottom list; blank ones live in the strip above.
@@ -40,8 +43,9 @@ function openPrint(html) {
   setTimeout(() => w.print(), 400);
 }
 
-export default function BASTModule({ role }) {
-  const approver = isApprover(role); // supervisor / director / superadmin — may reopen
+export default function BASTModule({ role, focus, onNavigate, canOpen = () => true, onClearFocus }) {
+  const approver = isApprover(role); // supervisor / director / superadmin
+  const canReset = canFill(role, 'bast');   // operator and up may RESET a filled BAST
   const bastC = useCollection(COL.bast);
   const doC   = useCollection(COL.deliveryOrders);
   const srC   = useCollection(COL.salesRequests);   // for the client PO reference
@@ -63,6 +67,7 @@ export default function BASTModule({ role }) {
     const soMap = {}; for (const r of srC.data) soMap[r.id] = r;
     const m = {};
     for (const b of bastC.data) {
+      if (b.status === 'cancelled') { m[b.id] = 'cancelled'; continue; }
       if (!b.deliveryOrderId) continue;
       const d = doMap[b.deliveryOrderId];
       if (!d) { m[b.id] = 'deleted'; continue; }
@@ -71,37 +76,6 @@ export default function BASTModule({ role }) {
     }
     return m;
   }, [bastC.data, doC.data, srC.data, doC.loading, srC.loading]);
-
-  // Blank BASTs awaiting fill — OLDEST first (longest-waiting surfaces at top),
-  // tiebreak by sequence number ascending.
-  // Blank BASTs awaiting fill. Ordering: items with an explicit `priority` come
-  // first in ascending priority; anything un-prioritized falls back to oldest
-  // date (then sequence). So the default view is by date until a user reorders.
-  const blankBASTs = useMemo(() => {
-    const hasP = b => b.priority !== undefined && b.priority !== null && b.priority !== '';
-    return bastC.data
-      .filter(b => b.status === 'blank' && !voidOf[b.id])
-      .sort((a, b) => {
-        const ap = hasP(a), bp = hasP(b);
-        if (ap && bp) return Number(a.priority) - Number(b.priority);
-        if (ap !== bp) return ap ? -1 : 1; // prioritized before un-prioritized
-        const d = String(a.tanggalBast || '').localeCompare(String(b.tanggalBast || ''));
-        if (d !== 0) return d;
-        return bastSeq(a) - bastSeq(b);
-      });
-  }, [bastC.data, voidOf]);
-
-  // Bottom list is COMPLETED (filled) BASTs only — newest first, seq desc tiebreak.
-  // Blank ones live only in the strip above, so the two sections never overlap.
-  const completedBASTs = useMemo(() => {
-    return bastC.data
-      .filter(b => b.status !== 'blank' || !!voidOf[b.id])
-      .sort((a, b) => {
-        const d = String(b.tanggalBast || '').localeCompare(String(a.tanggalBast || ''));
-        if (d !== 0) return d;
-        return bastSeq(b) - bastSeq(a);
-      });
-  }, [bastC.data, voidOf]);
 
   // Client PO reference per BAST: BAST → its DO → that DO's sales order.
   // Falls back to the PO stored on the DO itself.
@@ -117,6 +91,45 @@ export default function BASTModule({ role }) {
     return m;
   }, [bastC.data, doC.data, srC.data]);
   const poRefOf = (b) => poRefByBast[b.id] || '';
+
+  // Client PO ref / entity / vessel filters (shared with SO and DO pages).
+  const refF = useRefFilters(bastC.data, {
+    po: poRefOf, entity: b => b.recipient?.entityName, vessel: b => b.recipient?.vesselName });
+  // Arrived via a link → only that BAST (in whichever list it belongs).
+  const baseBASTs = focus ? bastC.data.filter(b => b.id === focus.id) : refF.filtered;
+  const narrowed = !!focus || refF.active;   // priority reorder is off while narrowed
+
+  // Blank BASTs awaiting fill — OLDEST first (longest-waiting surfaces at top),
+  // tiebreak by sequence number ascending.
+  // Blank BASTs awaiting fill. Ordering: items with an explicit `priority` come
+  // first in ascending priority; anything un-prioritized falls back to oldest
+  // date (then sequence). So the default view is by date until a user reorders.
+  const blankBASTs = useMemo(() => {
+    const hasP = b => b.priority !== undefined && b.priority !== null && b.priority !== '';
+    return baseBASTs
+      .filter(b => b.status === 'blank' && !voidOf[b.id])
+      .sort((a, b) => {
+        const ap = hasP(a), bp = hasP(b);
+        if (ap && bp) return Number(a.priority) - Number(b.priority);
+        if (ap !== bp) return ap ? -1 : 1; // prioritized before un-prioritized
+        const d = String(a.tanggalBast || '').localeCompare(String(b.tanggalBast || ''));
+        if (d !== 0) return d;
+        return bastSeq(a) - bastSeq(b);
+      });
+  }, [baseBASTs, voidOf]);
+
+  // Bottom list is COMPLETED (filled) BASTs only — newest first, seq desc tiebreak.
+  // Blank ones live only in the strip above, so the two sections never overlap.
+  const completedBASTs = useMemo(() => {
+    return baseBASTs
+      .filter(b => b.status !== 'blank' || !!voidOf[b.id])
+      .sort((a, b) => {
+        const d = String(b.tanggalBast || '').localeCompare(String(a.tanggalBast || ''));
+        if (d !== 0) return d;
+        return bastSeq(b) - bastSeq(a);
+      });
+  }, [baseBASTs, voidOf]);
+
 
   // Sortable columns for the completed list.
   const sortCols = useMemo(() => ({
@@ -317,34 +330,24 @@ export default function BASTModule({ role }) {
     await printBAST(toPrint);
   };
 
-  const del = async (b) => {
-    const msg = isOrphan(b)
-      ? `Delete orphaned BAST ${b.nomorBast}? Its delivery order no longer exists.`
-      : `Delete BAST ${b.nomorBast}?` + (b.status !== 'blank'
-          ? `\n\nThis BAST is FILLED (delivery recorded). Deleting it removes the delivery record. Continue?`
-          : '');
-    if (!confirm(msg)) return;
+  // RESET a filled BAST back to blank (operator and up). Typical reason: the
+  // client needs a different date printed. The BAST keeps its number; who / when /
+  // why is appended to resetHistory. Setting status to 'blank' makes the Cloud
+  // Function revert the linked DO (→ issued) and SO (→ do_issued) — unless they
+  // are cancelled. Nothing is ever deleted.
+  const [resetTarget, setResetTarget] = useState(null);
+  const doReset = async (reason) => {
+    const b = resetTarget;
+    const entry = { reason, by: auth.currentUser?.email || '', at: new Date().toISOString(), fromStatus: b.status };
     try {
-      await bastC.remove(b.id);
+      await bastC.update(b.id, {
+        status: 'blank',
+        lastResetReason: entry.reason, lastResetBy: entry.by, lastResetAt: entry.at,
+        resetHistory: [...(b.resetHistory || []), entry],
+      });
+      setResetTarget(null);
     } catch (e) {
-      alert(`Could not delete BAST ${b.nomorBast}: ${e.message}` +
-        (/permission/i.test(e.message) ? '\n\nDeleting a BAST needs supervisor, director or superadmin.' : ''));
-    }
-  };
-
-  // Reopen a completed BAST → back to 'blank' so it re-enters the fill queue for
-  // correction. Supervisor+ only. Setting status to 'blank' triggers the Cloud
-  // Function to REVERT the linked DO (→ issued) and SO (→ do_issued).
-  const reopen = async (b) => {
-    if (!approver) return;
-    if (!confirm(
-      `Reopen BAST ${b.nomorBast}? It returns to the blank/pre-bunker queue for correction, ` +
-      `and its linked DO and Sales Order revert to their pre-delivery status.`
-    )) return;
-    try {
-      await bastC.update(b.id, { status: 'blank' });
-    } catch (e) {
-      alert('Error reopening BAST: ' + e.message);
+      alert('Error resetting BAST: ' + e.message);
     }
   };
 
@@ -354,7 +357,7 @@ export default function BASTModule({ role }) {
   // rows whose priority actually changed. `dir` is -1 (up) or +1 (down).
   const [moveBusy, setMoveBusy] = useState(false);
   const moveBlank = async (b, dir) => {
-    if (moveBusy) return;
+    if (moveBusy || narrowed) return;
     const order = blankBASTs;                 // already in display order
     const i = order.findIndex(x => x.id === b.id);
     const j = i + dir;
@@ -379,6 +382,13 @@ export default function BASTModule({ role }) {
   };
 
   const fmtL = n => (Number(n) || 0).toLocaleString('id-ID');
+  const toDO = (b) => { const d = doById[b.deliveryOrderId]; if (d) onNavigate?.('do', d.id, d.brNo); };
+  // Cancellation note: the BAST's own reason, else its DO's / SO's.
+  const cancelNote = (b) => {
+    if (b.cancelReason) return cancelInfoLine(b);
+    const d = doById[b.deliveryOrderId];
+    return d?.cancelReason ? cancelInfoLine(d) : '';
+  };
   const clientOf = b => b.recipient?.entityName || '—';
   const vesselOf = b => b.recipient?.vesselName || '—';
 
@@ -391,11 +401,27 @@ export default function BASTModule({ role }) {
         </div>
       </div>
 
+      {/* Arrived via a link: one record only */}
+      {focus && <FocusBanner label={focus.label} onClear={onClearFocus} />}
+
+      {/* Filters: client PO ref, entity, vessel (apply to both lists) */}
+      {!form && !focus && bastC.data.length > 0 && (
+        <div style={{ ...s.card, marginBottom: 20 }}>
+          <div style={{ fontSize: 10, color: T.textDim, letterSpacing: 1.5, marginBottom: 10 }}>
+            FILTERS {refF.active && <span style={{ color: T.amber }}>· {baseBASTs.length} of {bastC.data.length} shown</span>}
+          </div>
+          <div style={{ display: 'flex', gap: 14, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+            <RefFilterInputs f={refF} />
+            {refF.active && <button onClick={refF.clear} style={{ ...s.btn('ghost'), fontSize: 11 }}>CLEAR FILTERS</button>}
+          </div>
+        </div>
+      )}
+
       {/* Blank BASTs awaiting fill */}
       {!form && blankBASTs.length > 0 && (
         <div style={{ ...s.card, marginBottom: 20 }}>
           <div style={{ fontSize: 10, color: T.textDim, letterSpacing: 1.5, marginBottom: 10 }}>
-            BLANK BASTs — PRINT PRE-BUNKER, FILL AFTER LOADING · ↑↓ TO PRIORITISE
+            BLANK BASTs — PRINT PRE-BUNKER, FILL AFTER LOADING · {narrowed ? 'clear filters to reorder' : '↑↓ TO PRIORITISE'}
           </div>
           {blankPg.pageRows.map(b => {
             const idx = blankBASTs.findIndex(x => x.id === b.id); // position in full queue
@@ -407,17 +433,26 @@ export default function BASTModule({ role }) {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                     <span style={{ fontFamily: T.font, fontSize: 11, color: T.amber, minWidth: 20, textAlign: 'right' }}>#{idx + 1}</span>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 1, marginLeft: 2 }}>
-                      <button onClick={() => moveBlank(b, -1)} disabled={moveBusy || idx === 0}
+                      <button onClick={() => moveBlank(b, -1)} disabled={moveBusy || narrowed || idx === 0}
                         title="Move up" style={{ ...s.btn('ghost'), padding: '0 6px', fontSize: 9, lineHeight: '14px',
                           opacity: (moveBusy || idx === 0) ? 0.3 : 1, cursor: idx === 0 ? 'default' : 'pointer' }}>▲</button>
-                      <button onClick={() => moveBlank(b, 1)} disabled={moveBusy || idx === blankBASTs.length - 1}
+                      <button onClick={() => moveBlank(b, 1)} disabled={moveBusy || narrowed || idx === blankBASTs.length - 1}
                         title="Move down" style={{ ...s.btn('ghost'), padding: '0 6px', fontSize: 9, lineHeight: '14px',
                           opacity: (moveBusy || idx === blankBASTs.length - 1) ? 0.3 : 1, cursor: idx === blankBASTs.length - 1 ? 'default' : 'pointer' }}>▼</button>
                     </div>
                   </div>
                   <div style={{ fontSize: 12 }}>
                     <span style={{ color: T.amber, fontFamily: T.font, fontSize: 11 }}>{b.nomorBast}</span>{voidBadge(b)}
-                    <span style={{ color: T.textDim }}> · {b.tanggalBast} · DO {b.supplier?.deliveryOrder} · PO {poRefOf(b) || '—'} · {clientOf(b)} · {vesselOf(b)} · {fmtL(b.dispatchedVolumeL)} L</span>
+                    <span style={{ color: T.textDim }}> · {b.tanggalBast} · DO </span>
+                    {doById[b.deliveryOrderId] && canOpen('do')
+                      ? <DocLink label={b.supplier?.deliveryOrder} title="Open this delivery order" onClick={() => toDO(b)} />
+                      : <span style={{ color: T.textDim }}>{b.supplier?.deliveryOrder}</span>}
+                    <span style={{ color: T.textDim }}> · PO {poRefOf(b) || '—'} · {clientOf(b)} · {vesselOf(b)} · {fmtL(b.dispatchedVolumeL)} L</span>
+                    {b.lastResetReason && (
+                      <div style={{ fontSize: 10, color: T.amber, marginTop: 2 }}>
+                        Reset: {b.lastResetReason}{b.lastResetBy ? ` · ${b.lastResetBy}` : ''}{b.lastResetAt ? ` · ${new Date(b.lastResetAt).toLocaleDateString('id-ID')}` : ''}
+                      </div>
+                    )}
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -625,10 +660,16 @@ export default function BASTModule({ role }) {
                   {statusMark(b)}
                 </div>
                 <div style={{ fontSize: 13, color: T.text }}>{clientOf(b)}</div>
+                {voidOf[b.id] === 'cancelled' && cancelNote(b) && (
+                  <div style={{ fontSize: 10, color: T.red, marginTop: 2 }}>{cancelNote(b)}</div>
+                )}
                 <div style={{ fontSize: 11, color: T.textDim, display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
                   <span>{b.tanggalBast}</span>
                   <span>· {vesselOf(b)}</span>
-                  <span style={{ fontFamily: T.font }}>· DO {b.supplier?.deliveryOrder || '—'}</span>
+                  <span style={{ fontFamily: T.font }}>· DO </span>
+                  {doById[b.deliveryOrderId] && canOpen('do')
+                    ? <DocLink label={b.supplier?.deliveryOrder} title="Open this delivery order" onClick={() => toDO(b)} />
+                    : <span style={{ fontFamily: T.font }}>{b.supplier?.deliveryOrder || '—'}</span>}
                   <span style={{ fontFamily: T.font, color: T.text }}>· PO {poRefOf(b) || '—'}</span>
                 </div>
                 <div style={{ fontSize: 11, color: T.textDim, display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
@@ -655,10 +696,10 @@ export default function BASTModule({ role }) {
                       {syncBusy[b.id] ? 'SYNCING…' : 'SYNC FROM DO'}
                     </button>
                   )}
-                  {approver && b.status !== 'blank' && !voidOf[b.id] && (
-                    <button onClick={() => reopen(b)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10 }}>REOPEN</button>
+                  {canReset && b.status !== 'blank' && !voidOf[b.id] && (
+                    <button onClick={() => setResetTarget(b)} title="Back to blank (e.g. to print a different date) — number is kept"
+                      style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10, color: T.amber, borderColor: T.amber }}>RESET</button>
                   )}
-                  <button onClick={() => del(b)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10, color: T.red }}>DEL</button>
                 </div>
               </div>
             );
@@ -695,9 +736,18 @@ export default function BASTModule({ role }) {
                     </td>
                     <td style={s.td}>{b.tanggalBast}</td>
                     <td style={{ ...s.td, fontFamily: T.font, fontSize: 10, color: T.text }}>{poRefOf(b) || '—'}</td>
-                    <td style={s.td}>{clientOf(b)}</td>
+                    <td style={s.td}>
+                      {clientOf(b)}
+                      {voidOf[b.id] === 'cancelled' && cancelNote(b) && (
+                        <div style={{ fontSize: 9, color: T.red, marginTop: 2 }}>{cancelNote(b)}</div>
+                      )}
+                    </td>
                     <td style={s.td}>{vesselOf(b)}</td>
-                    <td style={{ ...s.td, fontFamily: T.font, fontSize: 10 }}>{b.supplier?.deliveryOrder}</td>
+                    <td style={{ ...s.td, fontFamily: T.font, fontSize: 10 }}>
+                      {doById[b.deliveryOrderId] && canOpen('do')
+                        ? <DocLink label={b.supplier?.deliveryOrder} title="Open this delivery order" onClick={() => toDO(b)} />
+                        : b.supplier?.deliveryOrder}
+                    </td>
                     <td style={{ ...s.td, textAlign: 'center' }}>
                       {statusMark(b)}
                     </td>
@@ -720,10 +770,10 @@ export default function BASTModule({ role }) {
                           {syncBusy[b.id] ? 'SYNC…' : 'SYNC'}
                         </button>
                       )}
-                      {approver && b.status !== 'blank' && !voidOf[b.id] && (
-                        <button onClick={() => reopen(b)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6 }}>REOPEN</button>
+                      {canReset && b.status !== 'blank' && !voidOf[b.id] && (
+                        <button onClick={() => setResetTarget(b)} title="Back to blank (e.g. to print a different date) — number is kept"
+                          style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, color: T.amber, borderColor: T.amber }}>RESET</button>
                       )}
-                      <button onClick={() => del(b)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, color: T.red }}>DEL</button>
                     </td>
                   </tr>
                 );
@@ -732,6 +782,17 @@ export default function BASTModule({ role }) {
           </table>
           <PaginationBar {...pg} />
         </>
+      )}
+
+      {resetTarget && (
+        <ReasonDialog title={`RESET BAST ${resetTarget.nomorBast}`}
+          message={`The BAST goes back to the blank list so it can be printed and filled again ` +
+            `(e.g. with the date the client needs). It keeps its number ${resetTarget.nomorBast}.` +
+            `\nIts DO and sales order go back to their pre-delivery status until it is filled again.` +
+            `\n\nWho, when and why are recorded.`}
+          placeholder="e.g. Client needs delivery date 18 Oct on the BAST"
+          confirmLabel="RESET BAST"
+          onConfirm={doReset} onCancel={() => setResetTarget(null)} />
       )}
     </div>
   );

@@ -36,11 +36,20 @@ export default function App({ user, role, signOut }) {
 
   const [active, setActive] = useState(items[0]?.key || 'do');
 
+  // Cross-document links (SO → DO → BAST and back): switch page and show just
+  // that record. Picking a menu item clears it.
+  const [focus, setFocus] = useState(null);   // { module, id, label }
+  // Links only lead to pages this role can open (e.g. operators have no Sales page).
+  const canOpen = (module) => items.some(m => m.key === module);
+  const navigate = (module, id, label) => { if (!canOpen(module)) return; setFocus({ module, id, label }); setActive(module); };
+  const focusFor = (module) => (focus?.module === module ? focus : null);
+  const linkProps = (module) => ({ focus: focusFor(module), onNavigate: navigate, canOpen, onClearFocus: () => setFocus(null) });
+
   const renderModule = () => {
     switch (active) {
-      case 'sales':    return <SalesRequests role={role} />;
-      case 'do':       return <DeliveryOrders role={role} />;
-      case 'bast':     return <BASTModule role={role} />;
+      case 'sales':    return <SalesRequests role={role} {...linkProps('sales')} />;
+      case 'do':       return <DeliveryOrders role={role} {...linkProps('do')} />;
+      case 'bast':     return <BASTModule role={role} {...linkProps('bast')} />;
       case 'stock':    return <StockCards role={role} user={user} />;
       case 'commercial': return <Invoicing role={role} user={user} />;
       case 'settings': return <Settings role={role} />;
@@ -49,7 +58,7 @@ export default function App({ user, role, signOut }) {
     }
   };
 
-  const pick = (key) => { setActive(key); setOpen(false); };
+  const pick = (key) => { setActive(key); setFocus(null); setOpen(false); };
 
   const Sidebar = (
     <div style={{ width: 220, background: T.card, borderRight: `1px solid ${T.border}`,

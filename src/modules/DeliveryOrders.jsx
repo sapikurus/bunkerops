@@ -7,7 +7,8 @@ import { buildDOHtml } from './doGen';
 import VolumeInput from './VolumeInput';
 import { USI_LOGO, PPS_LOGO } from './assets';
 import { makeQR } from './qr';
-import { usePagination, PaginationBar, useIsNarrow, diffSOtoDO, diffDOtoBAST, useSort, SortHeader, StatusPill, MobileSortBar } from './listUtils';
+import { usePagination, PaginationBar, useIsNarrow, diffSOtoDO, diffDOtoBAST, useSort, SortHeader, StatusPill, MobileSortBar,
+  useRefFilters, RefFilterInputs, DocLink, FocusBanner, cancelInfoLine } from './listUtils';
 
 const DO_STATUS_COLORS = {
   issued: T.blue, delivered: '#a855f7', cancelled: T.red,
@@ -31,7 +32,7 @@ function openPrint(html) {
   setTimeout(() => w.print(), 400);
 }
 
-export default function DeliveryOrders() {
+export default function DeliveryOrders({ focus, onNavigate, canOpen = () => true, onClearFocus }) {
   const doC     = useCollection(COL.deliveryOrders);
   const srC     = useCollection(COL.salesRequests);
   const nodesC  = useCollection(COL.nodes);
@@ -66,14 +67,29 @@ export default function DeliveryOrders() {
     status:     d => d.status || '',
   }), [soById]);
 
+  // Client PO ref / entity / vessel filters (shared with SO and BAST pages).
+  const refF = useRefFilters(doC.data, {
+    po: d => d.clientPoRef || soOf(d)?.galleyPoRef, entity: d => d.deliverTo, vessel: d => d.vesselName });
+  // Arrived via a link → show only that DO.
+  const listDOs = focus ? doC.data.filter(d => d.id === focus.id) : refF.filtered;
+
+  // Each DO's BAST (for the DO → BAST link).
+  const bastByDO = useMemo(() => {
+    const m = {};
+    for (const b of bastC.data) if (b.deliveryOrderId) m[b.deliveryOrderId] = b;
+    return m;
+  }, [bastC.data]);
+  const toBAST = (d) => { const b = bastByDO[d.id]; if (b) onNavigate?.('bast', b.id, b.nomorBast); };
+  const toSO   = (d) => { const so = soOf(d); if (so) onNavigate?.('sales', so.id, so.soNumber); };
+
   // Default newest first; cancelled DOs sink to the bottom.
   const baseDOs = useMemo(() => {
-    return [...doC.data].sort((a, b) => {
+    return [...listDOs].sort((a, b) => {
       const d = String(b.brDate || '').localeCompare(String(a.brDate || ''));
       if (d !== 0) return d;
       return String(b.brNo || '').localeCompare(String(a.brNo || ''));
     });
-  }, [doC.data]);
+  }, [listDOs]);
 
   const { sorted: userSorted, sortKey, sortDir, toggle, setSort } = useSort(baseDOs, sortCols);
   const sortedDOs = useMemo(() => {
@@ -295,36 +311,6 @@ export default function DeliveryOrders() {
     openPrint(html);
   };
 
-  // Delete a DO together with its BAST so nothing is left orphaned.
-  // - A BLANK BAST is deleted along with the DO.
-  // - A FILLED BAST blocks the delete: fuel was delivered and signed for, so the
-  //   record must not vanish silently. Reopen or delete the BAST deliberately first.
-  const del = async (d) => {
-    const theBAST = bastC.data.find(b => b.deliveryOrderId === d.id) || null;
-    if (theBAST && theBAST.status !== 'blank') {
-      alert(`Cannot delete ${d.brNo}: its BAST ${theBAST.nomorBast} is already filled (delivery recorded).\n\n` +
-        `Reopen the BAST (supervisor+) or delete it on the BAST page first, then delete this DO.`);
-      return;
-    }
-    const so = d.salesRequestId ? srC.data.find(r => r.id === d.salesRequestId) : null;
-    const willRevert = !!so && d.status !== 'cancelled';
-    if (!confirm(
-      `Delete DO ${d.brNo}?` +
-      (theBAST ? `\n\nIts blank BAST ${theBAST.nomorBast} will also be deleted.` : '') +
-      (willRevert ? `\n\nSales order ${so.soNumber || ''} will revert to 'requested'.` : '')
-    )) return;
-    try {
-      // Child first, so a failure part-way never leaves a BAST without its DO.
-      if (theBAST) await bastC.remove(theBAST.id);
-      await doC.remove(d.id);
-      // Only revert an SO that still exists and wasn't cancelled (a cancelled
-      // DO's SO is itself cancelled — don't resurrect it to 'requested').
-      if (willRevert) await srC.update(so.id, { status: 'requested' });
-    } catch (e) {
-      alert('Error deleting DO: ' + e.message);
-    }
-  };
-
   const fmtL = n => (Number(n) || 0).toLocaleString('id-ID');
 
   // Compute discrepancy list for a DO against its parent SO.
@@ -491,11 +477,32 @@ export default function DeliveryOrders() {
         </div>
       )}
 
+      {/* Arrived via a link: one record only */}
+      {focus && <FocusBanner label={focus.label} onClear={onClearFocus} />}
+
+      {/* Filters: client PO ref, entity, vessel */}
+      {!form && !focus && doC.data.length > 0 && (
+        <div style={{ ...s.card, marginBottom: 20 }}>
+          <div style={{ fontSize: 10, color: T.textDim, letterSpacing: 1.5, marginBottom: 10 }}>
+            FILTERS {refF.active && <span style={{ color: T.amber }}>· {listDOs.length} of {doC.data.length} shown</span>}
+          </div>
+          <div style={{ display: 'flex', gap: 14, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+            <RefFilterInputs f={refF} />
+            {refF.active && <button onClick={refF.clear} style={{ ...s.btn('ghost'), fontSize: 11 }}>CLEAR FILTERS</button>}
+          </div>
+        </div>
+      )}
+
       {/* List */}
       {doC.loading ? (
         <div style={{ color: T.textDim, fontSize: 12 }}>Loading…</div>
       ) : doC.data.length === 0 ? (
         <div style={{ color: T.textFaint, fontSize: 12, padding: 20 }}>No delivery orders yet.</div>
+      ) : listDOs.length === 0 ? (
+        <div style={{ color: T.textFaint, fontSize: 12, padding: 20 }}>
+          No delivery orders match the current filters.{' '}
+          <span onClick={refF.clear} style={{ color: T.amber, cursor: 'pointer', textDecoration: 'underline' }}>Clear filters</span>
+        </div>
       ) : narrow ? (
         // -------- Mobile: stacked cards --------
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -513,16 +520,26 @@ export default function DeliveryOrders() {
                 <span>· {d.vesselName || '—'}</span>
                 <span style={{ fontFamily: T.font }}>· {fmtL(d.dispatchedVolumeL)} L</span>
               </div>
-              <div style={{ fontSize: 10, color: T.textFaint, marginTop: 4 }}>
-                SO {soOf(d)?.soNumber || '—'} · {soDate(d) || '—'}
+              <div style={{ fontSize: 10, color: T.textFaint, marginTop: 4, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                <span>SO</span>
+                {soOf(d) && canOpen('sales') ? <DocLink label={soOf(d).soNumber} title="Open the sales order" onClick={() => toSO(d)} /> : <span style={{ fontFamily: T.font }}>{soOf(d)?.soNumber || '—'}</span>}
+                <span>· {soDate(d) || '—'}</span>
+                <span>· PO {d.clientPoRef || soOf(d)?.galleyPoRef || '—'}</span>
               </div>
+              {bastByDO[d.id] && canOpen('bast') && (
+                <div style={{ marginTop: 4 }}>
+                  <DocLink label={`→ BAST ${bastByDO[d.id].nomorBast}`} title="Open this BAST" onClick={() => toBAST(d)} />
+                </div>
+              )}
+              {d.status === 'cancelled' && cancelInfoLine(d) && (
+                <div style={{ fontSize: 10, color: T.red, marginTop: 4 }}>{cancelInfoLine(d)}</div>
+              )}
               {d.status !== 'cancelled' && <SyncBanner d={d} />}
               <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
                 <button onClick={() => printDO(d)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10 }}>PDF</button>
                 {d.status !== 'cancelled' && (
                   <button onClick={() => startEdit(d)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10 }}>EDIT</button>
                 )}
-                <button onClick={() => del(d)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10, color: T.red }}>DEL</button>
               </div>
             </div>
           ))}
@@ -553,22 +570,32 @@ export default function DeliveryOrders() {
                       <td style={{ ...s.td, fontFamily: T.font, color: T.amber, fontSize: 11 }}>
                         {d.brNo}
                         {diffs.length > 0 && <span title="Out of sync with SO" style={{ color: T.amber, marginLeft: 6 }}>⚠</span>}
+                        {bastByDO[d.id] && canOpen('bast') && (
+                          <div style={{ marginTop: 2 }}>
+                            <DocLink label={`→ BAST ${bastByDO[d.id].nomorBast}`} title="Open this BAST" onClick={() => toBAST(d)} />
+                          </div>
+                        )}
                       </td>
                       <td style={s.td}>{d.brDate}</td>
                       <td style={{ ...s.td, fontSize: 10 }}>
-                        <div style={{ fontFamily: T.font, color: T.textDim }}>{soOf(d)?.soNumber || '—'}</div>
+                        <div>{soOf(d) && canOpen('sales') ? <DocLink label={soOf(d).soNumber} title="Open the sales order" onClick={() => toSO(d)} /> : <span style={{ fontFamily: T.font, color: T.textDim }}>{soOf(d)?.soNumber || '—'}</span>}</div>
                         <div style={{ color: T.textFaint }}>{soDate(d) || '—'}</div>
+                        <div style={{ color: T.textFaint }}>PO {d.clientPoRef || soOf(d)?.galleyPoRef || '—'}</div>
                       </td>
                       <td style={s.td}>{d.deliverTo}</td>
                       <td style={s.td}>{d.vesselName}</td>
                       <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font }}>{fmtL(d.dispatchedVolumeL)}</td>
-                      <td style={s.td}><StatusPill status={d.status} color={doStatusColor(d.status)} /></td>
+                      <td style={s.td}>
+                        <StatusPill status={d.status} color={doStatusColor(d.status)} />
+                        {d.status === 'cancelled' && d.cancelReason && (
+                          <div title={cancelInfoLine(d)} style={{ fontSize: 9, color: T.red, marginTop: 3, maxWidth: 160 }}>{d.cancelReason}</div>
+                        )}
+                      </td>
                       <td style={{ ...s.td, textAlign: 'right', whiteSpace: 'nowrap' }}>
                         <button onClick={() => printDO(d)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6 }}>PDF</button>
                         {d.status !== 'cancelled' && (
-                          <button onClick={() => startEdit(d)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6 }}>EDIT</button>
+                          <button onClick={() => startEdit(d)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10 }}>EDIT</button>
                         )}
-                        <button onClick={() => del(d)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, color: T.red }}>DEL</button>
                       </td>
                     </tr>
                     {diffs.length > 0 && d.status !== 'cancelled' && (

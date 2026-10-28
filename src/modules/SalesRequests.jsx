@@ -5,7 +5,9 @@ import { useCollection } from './useCollection';
 import { allocateNumber } from './counters';
 import VolumeInput from './VolumeInput';
 import { useFuelOpsMaster } from './useFuelOpsMaster';
-import { usePagination, PaginationBar, useIsNarrow, diffSOtoDO, useSort, SortHeader, StatusPill, MobileSortBar } from './listUtils';
+import { usePagination, PaginationBar, useIsNarrow, diffSOtoDO, useSort, SortHeader, StatusPill, MobileSortBar,
+  ReasonDialog, useRefFilters, RefFilterInputs, DocLink, FocusBanner, cancelInfoLine } from './listUtils';
+import { auth } from '../firebase';
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
@@ -21,10 +23,12 @@ const STATUS_COLORS = {
   bast_done: '#a855f7', reconciled: T.green, cancelled: T.red,
 };
 const statusColor = st => STATUS_COLORS[st] || T.textDim;
+// Who may cancel a sales order (client cancelled the PO).
+const CANCEL_ROLES = ['superadmin', 'director', 'supervisor'];
 // Active statuses sort/show before terminal ones; cancelled sinks to the bottom.
 const STATUS_RANK = { pending_approval: 0, requested: 1, do_issued: 2, bast_done: 3, reconciled: 4, cancelled: 9 };
 
-export default function SalesRequests() {
+export default function SalesRequests({ role, focus, onNavigate, canOpen = () => true, onClearFocus }) {
   const sr       = useCollection(COL.salesRequests);
   const doC      = useCollection(COL.deliveryOrders);
   const bastC    = useCollection(COL.bast);
@@ -69,42 +73,52 @@ export default function SalesRequests() {
     status:   r => STATUS_RANK[r.status] ?? 5,
   }), []);
 
-  // Client/entity dropdown options from the data (one entry per "Group — Entity").
-  const clientOpts = useMemo(() => {
-    const set = new Set();
-    for (const r of sr.data) {
-      const label = [r.clientName, r.entityName].filter(Boolean).join(' — ');
-      if (label) set.add(label);
-    }
-    return [...set].sort((a, b) => a.localeCompare(b));
-  }, [sr.data]);
-
-  const filtersActive = fFrom || fTo || fClient || fScheme;
-  const clearFilters = () => { setFFrom(''); setFTo(''); setFClient(''); setFScheme(''); };
+  // Client-group dropdown options (entity has its own filter below).
+  const clientOpts = useMemo(
+    () => [...new Set(sr.data.map(r => r.clientName).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+    [sr.data]);
 
   // Apply filters (requested-date range + client/entity + scheme) before sort.
   const filteredRows = useMemo(() => {
     return sr.data.filter(r => {
       if (fFrom && (!r.requestedDate || r.requestedDate < fFrom)) return false;
       if (fTo   && (!r.requestedDate || r.requestedDate > fTo))   return false;
-      if (fClient) {
-        const label = [r.clientName, r.entityName].filter(Boolean).join(' — ');
-        if (label !== fClient) return false;
-      }
+      if (fClient && r.clientName !== fClient) return false;
       if (fScheme && (r.scheme || 'PPS_SALE') !== fScheme) return false;
       return true;
     });
   }, [sr.data, fFrom, fTo, fClient, fScheme]);
 
+  // Client PO ref / entity / vessel filters (shared with DO and BAST pages).
+  const refF = useRefFilters(filteredRows, {
+    po: r => r.galleyPoRef, entity: r => r.entityName, vessel: r => r.vesselName });
+  const filtersActive = fFrom || fTo || fClient || fScheme || refF.active;
+  const clearFilters = () => { setFFrom(''); setFTo(''); setFClient(''); setFScheme(''); refF.clear(); };
+
+  // Arrived via a link → show only that sales order.
+  const listRows = focus ? sr.data.filter(r => r.id === focus.id) : refF.filtered;
+
+  // Each SO's delivery order (for the SO → DO link).
+  const doBySO = useMemo(() => {
+    const m = {};
+    for (const d of doC.data) if (d.salesRequestId) m[d.salesRequestId] = d;
+    return m;
+  }, [doC.data]);
+  const bastByDO = useMemo(() => {
+    const m = {};
+    for (const b of bastC.data) if (b.deliveryOrderId) m[b.deliveryOrderId] = b;
+    return m;
+  }, [bastC.data]);
+
   // Default view: newest first. Cancelled rows always sink below active ones,
   // regardless of the chosen sort, so they read as "done/closed".
   const baseRows = useMemo(() => {
-    return [...filteredRows].sort((a, b) => {
+    return [...listRows].sort((a, b) => {
       const d = String(b.requestedDate || '').localeCompare(String(a.requestedDate || ''));
       if (d !== 0) return d;
       return String(b.soNumber || '').localeCompare(String(a.soNumber || ''));
     });
-  }, [filteredRows]);
+  }, [listRows]);
 
   const { sorted: userSorted, sortKey, sortDir, toggle, setSort } = useSort(baseRows, sortCols);
   // Keep cancelled at the bottom on top of whatever sort is active.
@@ -183,59 +197,38 @@ export default function SalesRequests() {
     cancel();
   };
 
-  // Delete an SO together with its DO and blank BAST so nothing is orphaned.
-  // Blocked when the BAST is already filled — the delivery happened, so the
-  // record must not vanish silently. (Use CANCEL for client cancellations.)
-  const del = async (r) => {
-    const theDOs  = doC.data.filter(d => d.salesRequestId === r.id);
-    const theBASTs = bastC.data.filter(b => theDOs.some(d => d.id === b.deliveryOrderId));
-    const filled = theBASTs.find(b => b.status !== 'blank');
-    if (filled) {
-      alert(`Cannot delete ${r.soNumber}: BAST ${filled.nomorBast} is already filled (delivery recorded).\n\n` +
-        `Reopen the BAST (supervisor+) or delete it on the BAST page first. ` +
-        `For a client cancellation, use CANCEL instead.`);
+  // Cancel an SO (client cancelled the PO). Nothing is ever deleted: the SO, its
+  // DO and its BAST keep their numbers and are marked 'cancelled' with the reason,
+  // who and when — so the team can follow up. Supervisor and above only.
+  // If the BAST is already filled (delivery recorded), it must be RESET on the
+  // BAST page first — cancelling a recorded delivery is never silent.
+  const [cancelTarget, setCancelTarget] = useState(null);   // { r, theDO, theBAST }
+  const canCancel = CANCEL_ROLES.includes(role);
+
+  const cancelSO = (r) => {
+    if (r.status === 'cancelled' || !canCancel) return;
+    const theDO = doBySO[r.id] || null;
+    const theBAST = theDO ? bastByDO[theDO.id] || null : null;
+    if (theBAST && theBAST.status !== 'blank' && theBAST.status !== 'cancelled') {
+      alert(`Cannot cancel ${r.soNumber}: BAST ${theBAST.nomorBast} is filled (delivery recorded).\n\n` +
+        `Reset the BAST on the BAST page first, then cancel this sales order.`);
       return;
     }
-    if (!confirm(
-      `Delete sales order ${r.soNumber || ''}?` +
-      (theDOs.length ? `\n\nThis also deletes DO ${theDOs.map(d => d.brNo).join(', ')}` +
-        (theBASTs.length ? ` and blank BAST ${theBASTs.map(b => b.nomorBast).join(', ')}` : '') + '.' : '') +
-      `\n\nThis cannot be undone.`
-    )) return;
-    try {
-      // Children first, so a failure part-way never leaves orphans behind.
-      for (const b of theBASTs) await bastC.remove(b.id);
-      for (const d of theDOs)   await doC.remove(d.id);
-      await sr.remove(r.id);
-    } catch (e) {
-      alert('Error deleting sales order: ' + e.message);
-    }
+    setCancelTarget({ r, theDO, theBAST });
   };
 
-  // Cancel an SO (e.g. client cancellation). Cascades: its DO → 'cancelled',
-  // and its still-blank BAST is deleted. Blocked once a BAST has been filled,
-  // because that means fuel was physically delivered and can't be un-delivered.
-  const cancelSO = async (r) => {
-    if (r.status === 'cancelled') return;
-    const theDO = doC.data.find(d => d.salesRequestId === r.id);
-    const theBAST = theDO ? bastC.data.find(b => b.deliveryOrderId === theDO.id) : null;
-
-    if (theBAST && theBAST.status !== 'blank') {
-      alert(`Cannot cancel ${r.soNumber}: its BAST (${theBAST.nomorBast}) is already filled — ` +
-        `the delivery has happened. Reopen/handle the BAST first if this is a correction.`);
-      return;
-    }
-    if (!confirm(
-      `Cancel sales order ${r.soNumber}?\n\n` +
-      (theDO ? `Its delivery order ${theDO.brNo} will also be marked cancelled` +
-        (theBAST ? `, and the blank BAST ${theBAST.nomorBast} will be removed` : '') + '.\n\n' : '') +
-      `Cancelled records are kept for history but can no longer be edited.`
-    )) return;
-
+  const doCancel = async (reason) => {
+    const { r, theDO, theBAST } = cancelTarget;
+    const stamp = {
+      status: 'cancelled', cancelReason: reason,
+      cancelledBy: auth.currentUser?.email || '', cancelledAt: new Date().toISOString(),
+    };
     try {
-      await sr.update(r.id, { status: 'cancelled' });
-      if (theDO) await doC.update(theDO.id, { status: 'cancelled' });
-      if (theBAST && theBAST.status === 'blank') await bastC.remove(theBAST.id);
+      // Children first: a part-way failure never leaves a live BAST under a cancelled SO.
+      if (theBAST && theBAST.status !== 'cancelled') await bastC.update(theBAST.id, stamp);
+      if (theDO && theDO.status !== 'cancelled') await doC.update(theDO.id, stamp);
+      await sr.update(r.id, stamp);
+      setCancelTarget(null);
     } catch (e) {
       alert('Error cancelling: ' + e.message);
     }
@@ -259,12 +252,15 @@ export default function SalesRequests() {
         {!form && <button onClick={startNew} style={s.btn('primary')}>+ NEW SALES ORDER</button>}
       </div>
 
-      {/* Filter bar: date range, client/entity, scheme */}
-      {!form && (
+      {/* Arrived via a link: one record only */}
+      {focus && <FocusBanner label={focus.label} onClear={onClearFocus} />}
+
+      {/* Filter bar: date, client group, scheme, client PO ref, entity, vessel */}
+      {!form && !focus && (
         <div style={{ ...s.card, marginBottom: 20 }}>
           <div style={{ fontSize: 10, color: T.textDim, letterSpacing: 1.5, marginBottom: 10 }}>
-            FILTERS {filteredRows.length !== sr.data.length && (
-              <span style={{ color: T.amber }}>· {filteredRows.length} of {sr.data.length} shown</span>
+            FILTERS {listRows.length !== sr.data.length && (
+              <span style={{ color: T.amber }}>· {listRows.length} of {sr.data.length} shown</span>
             )}
           </div>
           <div style={{ display: 'flex', gap: 14, alignItems: 'flex-end', flexWrap: 'wrap' }}>
@@ -279,9 +275,9 @@ export default function SalesRequests() {
                 style={{ ...s.input, width: 150, fontSize: 11 }} />
             </div>
             <div>
-              <label style={s.label}>Client / Entity</label>
+              <label style={s.label}>Client Group</label>
               <select value={fClient} onChange={e => setFClient(e.target.value)}
-                style={{ ...s.input, width: 240, fontSize: 11 }}>
+                style={{ ...s.input, width: 180, fontSize: 11 }}>
                 <option value="">— all —</option>
                 {clientOpts.map(c => <option key={c} value={c}>{c}</option>)}
               </select>
@@ -294,6 +290,7 @@ export default function SalesRequests() {
                 {Object.values(SCHEMES).map(sc => <option key={sc.key} value={sc.key}>{sc.label}</option>)}
               </select>
             </div>
+            <RefFilterInputs f={refF} />
             {filtersActive && (
               <button onClick={clearFilters} style={{ ...s.btn('ghost'), fontSize: 11 }}>CLEAR FILTERS</button>
             )}
@@ -424,7 +421,7 @@ export default function SalesRequests() {
         <div style={{ color: T.textDim, fontSize: 12 }}>Loading…</div>
       ) : sr.data.length === 0 ? (
         <div style={{ color: T.textFaint, fontSize: 12, padding: 20 }}>No sales orders yet.</div>
-      ) : filteredRows.length === 0 ? (
+      ) : listRows.length === 0 ? (
         <div style={{ color: T.textFaint, fontSize: 12, padding: 20 }}>
           No sales orders match the current filters.{' '}
           <span onClick={clearFilters} style={{ color: T.amber, cursor: 'pointer', textDecoration: 'underline' }}>Clear filters</span>
@@ -441,6 +438,12 @@ export default function SalesRequests() {
                 <StatusPill status={r.status} color={statusColor(r.status)} />
               </div>
               <div style={{ fontSize: 10, color: T.textFaint, marginBottom: 4 }}>PO {r.galleyPoRef || '—'}</div>
+              {doBySO[r.id] && canOpen('do') && (
+                <div style={{ marginBottom: 4 }}>
+                  <DocLink label={`→ ${doBySO[r.id].brNo}`} title="Open this delivery order"
+                    onClick={() => onNavigate?.('do', doBySO[r.id].id, doBySO[r.id].brNo)} />
+                </div>
+              )}
               <div style={{ fontSize: 13, color: T.text }}>{r.clientName}</div>
               <div style={{ fontSize: 11, color: T.textDim, marginBottom: 6 }}>{r.entityName}</div>
               <div style={{ fontSize: 11, color: T.textDim, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
@@ -450,6 +453,9 @@ export default function SalesRequests() {
                 <span style={{ fontFamily: T.font }}>· {fmtL(r.requestedVolumeL)} L</span>
               </div>
               <div style={{ fontSize: 10, color: schemeColor(r), marginTop: 4 }}>{schemeLabel(r)}</div>
+              {r.status === 'cancelled' && cancelInfoLine(r) && (
+                <div style={{ fontSize: 10, color: T.red, marginTop: 4 }}>{cancelInfoLine(r)}</div>
+              )}
               {staleBySO[r.id] > 0 && (
                 <div style={{ fontSize: 10, color: T.amber, marginTop: 6 }}>
                   ⚠ Linked DO out of sync ({staleBySO[r.id]} field{staleBySO[r.id] > 1 ? 's' : ''})
@@ -459,10 +465,9 @@ export default function SalesRequests() {
                 {r.status !== 'cancelled' && (
                   <button onClick={() => startEdit(r)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10 }}>EDIT</button>
                 )}
-                {r.status !== 'cancelled' && (
+                {r.status !== 'cancelled' && canCancel && (
                   <button onClick={() => cancelSO(r)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10, color: T.red, borderColor: T.red }}>CANCEL</button>
                 )}
-                <button onClick={() => del(r)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10, color: T.red }}>DEL</button>
               </div>
             </div>
           ))}
@@ -495,6 +500,12 @@ export default function SalesRequests() {
                       <span title={`Linked DO out of sync (${staleBySO[r.id]} field(s))`}
                         style={{ color: T.amber, marginLeft: 6 }}>⚠</span>
                     )}
+                    {doBySO[r.id] && canOpen('do') && (
+                      <div style={{ marginTop: 2 }}>
+                        <DocLink label={`→ ${doBySO[r.id].brNo}`} title="Open this delivery order"
+                          onClick={() => onNavigate?.('do', doBySO[r.id].id, doBySO[r.id].brNo)} />
+                      </div>
+                    )}
                   </td>
                   <td style={{ ...s.td, fontSize: 10 }}>{r.galleyPoRef || '—'}</td>
                   <td style={s.td}>{r.requestedDate}</td>
@@ -510,15 +521,17 @@ export default function SalesRequests() {
                   <td style={{ ...s.td, textAlign: 'right', fontFamily: T.font }}>{fmtL(r.requestedVolumeL)}</td>
                   <td style={s.td}>
                     <StatusPill status={r.status} color={statusColor(r.status)} />
+                    {r.status === 'cancelled' && r.cancelReason && (
+                      <div title={cancelInfoLine(r)} style={{ fontSize: 9, color: T.red, marginTop: 3, maxWidth: 160 }}>{r.cancelReason}</div>
+                    )}
                   </td>
                   <td style={{ ...s.td, textAlign: 'right', whiteSpace: 'nowrap' }}>
                     {r.status !== 'cancelled' && (
                       <button onClick={() => startEdit(r)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6 }}>EDIT</button>
                     )}
-                    {r.status !== 'cancelled' && (
-                      <button onClick={() => cancelSO(r)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6, color: T.red, borderColor: T.red }}>CANCEL</button>
+                    {r.status !== 'cancelled' && canCancel && (
+                      <button onClick={() => cancelSO(r)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, color: T.red, borderColor: T.red }}>CANCEL</button>
                     )}
-                    <button onClick={() => del(r)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, color: T.red }}>DEL</button>
                   </td>
                 </tr>
               ))}
@@ -526,6 +539,18 @@ export default function SalesRequests() {
           </table>
           <PaginationBar {...pg} />
         </>
+      )}
+
+      {cancelTarget && (
+        <ReasonDialog danger title={`CANCEL ${cancelTarget.r.soNumber || 'SALES ORDER'}`}
+          message={
+            `The sales order keeps its number and is marked cancelled.` +
+            (cancelTarget.theDO ? `\nDelivery order ${cancelTarget.theDO.brNo} is marked cancelled too.` : '') +
+            (cancelTarget.theBAST ? `\nBAST ${cancelTarget.theBAST.nomorBast} is marked cancelled too.` : '') +
+            `\n\nNothing is deleted. This cannot be undone from the app.`}
+          placeholder="e.g. Client cancelled PO — vessel changed schedule"
+          confirmLabel="CANCEL SALES ORDER"
+          onConfirm={doCancel} onCancel={() => setCancelTarget(null)} />
       )}
 
       {ftError && (

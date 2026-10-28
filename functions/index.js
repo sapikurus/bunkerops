@@ -47,8 +47,12 @@ exports.onBastStatusChange = onDocumentWritten(`${COL.bast}/{bastId}`, async (ev
   const after  = event.data?.after?.data()  || null;
   const bastId = event.params.bastId;
 
-  // Document deleted — leave DO/SO as-is (deletion is handled in the app, not here).
+  // Document deleted — leave DO/SO as-is (deletes are no longer allowed anyway).
   if (!after) return;
+
+  // A cancelled BAST never moves its DO / SO (cancellation is set by the app on
+  // all three documents together).
+  if (after.status === 'cancelled') return;
 
   const wasDone = before?.status === 'bast_done';
   const isDone  = after.status === 'bast_done';
@@ -79,6 +83,12 @@ exports.onBastStatusChange = onDocumentWritten(`${COL.bast}/{bastId}`, async (ev
     }
     const doData = doSnap.data();
 
+    // Never revive a cancelled DO (or its SO) — cancellations are final.
+    if (doData.status === 'cancelled') {
+      console.log(`DO ${deliveryOrderId} is cancelled; BAST ${bastId} change ignored.`);
+      return;
+    }
+
     if (doData.status !== doTarget) {
       await doRef.update({ status: doTarget });
       console.log(`[${direction}] DO ${deliveryOrderId} → ${doTarget} (BAST ${bastId}).`);
@@ -88,7 +98,7 @@ exports.onBastStatusChange = onDocumentWritten(`${COL.bast}/{bastId}`, async (ev
     if (salesRequestId) {
       const soRef = db.collection(COL.salesRequests).doc(salesRequestId);
       const soSnap = await soRef.get();
-      if (soSnap.exists && soSnap.data().status !== soTarget) {
+      if (soSnap.exists && soSnap.data().status !== 'cancelled' && soSnap.data().status !== soTarget) {
         await soRef.update({ status: soTarget });
         console.log(`[${direction}] SO ${salesRequestId} → ${soTarget}.`);
       }

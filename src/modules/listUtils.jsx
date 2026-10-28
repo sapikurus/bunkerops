@@ -289,3 +289,126 @@ export function StatusPill({ status, color, label }) {
     </span>
   );
 }
+
+// ---------------------------------------------------------------------------
+// ReasonDialog — modal that requires a written reason before confirming
+// (cancel SO, reset BAST). Nothing is deleted in BunkerOps; the reason is what
+// lets the team follow up later.
+// ---------------------------------------------------------------------------
+export function ReasonDialog({ title, message, confirmLabel = 'CONFIRM', placeholder, danger, onConfirm, onCancel }) {
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const ok = reason.trim().length >= 3;
+  const submit = async () => {
+    if (!ok || busy) return;
+    setBusy(true);
+    try { await onConfirm(reason.trim()); } finally { setBusy(false); }
+  };
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 100,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}
+      onClick={e => { if (e.target === e.currentTarget && !busy) onCancel(); }}>
+      <div style={{ ...s.card, width: '100%', maxWidth: 460, padding: 20 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 1, color: danger ? T.red : T.amber, marginBottom: 8 }}>{title}</div>
+        <div style={{ fontSize: 12, color: T.text, lineHeight: 1.6, whiteSpace: 'pre-line', marginBottom: 12 }}>{message}</div>
+        <label style={s.label}>Reason (required)</label>
+        <textarea autoFocus rows={3} value={reason} onChange={e => setReason(e.target.value)}
+          placeholder={placeholder || 'Write the reason…'}
+          style={{ ...s.input, width: '100%', fontSize: 12, resize: 'vertical' }} />
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14 }}>
+          <button onClick={onCancel} disabled={busy} style={{ ...s.btn('ghost'), fontSize: 11 }}>BACK</button>
+          <button onClick={submit} disabled={!ok || busy}
+            style={{ ...s.btn('primary'), fontSize: 11, opacity: (!ok || busy) ? 0.5 : 1,
+              ...(danger ? { background: T.red, borderColor: T.red } : {}) }}>
+            {busy ? 'SAVING…' : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Reference filters — client PO reference (search), entity, vessel — shared by
+// Sales Requests, Delivery Orders and BAST. PO search ignores case, spaces and
+// the letter-O / zero mix-up (PO48 finds P048 and vice versa).
+// ---------------------------------------------------------------------------
+const poSearchKey = (v) => String(v ?? '').toUpperCase().replace(/\s+/g, '').replace(/O/g, '0');
+
+export function useRefFilters(rows, get) {
+  const [po, setPo] = useState('');
+  const [entity, setEntity] = useState('');
+  const [vessel, setVessel] = useState('');
+  const uniq = (fn) => [...new Set(rows.map(fn).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
+  const entityOpts = useMemo(() => uniq(get.entity), [rows]); // eslint-disable-line react-hooks/exhaustive-deps
+  const vesselOpts = useMemo(() => uniq(get.vessel), [rows]); // eslint-disable-line react-hooks/exhaustive-deps
+  const filtered = useMemo(() => {
+    const q = poSearchKey(po);
+    return rows.filter(r =>
+      (!q || poSearchKey(get.po(r)).includes(q)) &&
+      (!entity || get.entity(r) === entity) &&
+      (!vessel || get.vessel(r) === vessel));
+  }, [rows, po, entity, vessel]); // eslint-disable-line react-hooks/exhaustive-deps
+  const active = !!(po || entity || vessel);
+  const clear = () => { setPo(''); setEntity(''); setVessel(''); };
+  return { filtered, active, clear, po, setPo, entity, setEntity, vessel, setVessel, entityOpts, vesselOpts };
+}
+
+// The three filter inputs (render inside an existing filter card / row).
+export function RefFilterInputs({ f }) {
+  return (
+    <>
+      <div>
+        <label style={s.label}>Client PO Ref</label>
+        <input value={f.po} onChange={e => f.setPo(e.target.value)} placeholder="search PO…"
+          style={{ ...s.input, width: 170, fontSize: 11 }} />
+      </div>
+      <div>
+        <label style={s.label}>Entity</label>
+        <select value={f.entity} onChange={e => f.setEntity(e.target.value)} style={{ ...s.input, width: 220, fontSize: 11 }}>
+          <option value="">— all —</option>
+          {f.entityOpts.map(v => <option key={v} value={v}>{v}</option>)}
+        </select>
+      </div>
+      <div>
+        <label style={s.label}>Vessel</label>
+        <select value={f.vessel} onChange={e => f.setVessel(e.target.value)} style={{ ...s.input, width: 150, fontSize: 11 }}>
+          <option value="">— all —</option>
+          {f.vesselOpts.map(v => <option key={v} value={v}>{v}</option>)}
+        </select>
+      </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Cross-document links (SO → DO → BAST and back) and the "showing one record"
+// banner shown after following a link.
+// ---------------------------------------------------------------------------
+export function DocLink({ label, onClick, title }) {
+  if (!label) return null;
+  return (
+    <button type="button" onClick={onClick} title={title}
+      style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: T.font,
+        fontSize: 10, color: T.blue, textDecoration: 'underline', textAlign: 'left' }}>
+      {label}
+    </button>
+  );
+}
+
+export function FocusBanner({ label, onClear }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 12,
+      border: `1px solid ${T.blue}`, borderRadius: 4, padding: '8px 12px', fontSize: 11 }}>
+      <span>Showing <b style={{ fontFamily: T.font }}>{label}</b> only</span>
+      <button onClick={onClear} style={{ ...s.btn('ghost'), padding: '2px 10px', fontSize: 10 }}>SHOW ALL</button>
+    </div>
+  );
+}
+
+// Who did it (for cancel / reset audit fields).
+export function cancelInfoLine(doc) {
+  if (!doc?.cancelReason) return '';
+  const when = doc.cancelledAt ? new Date(doc.cancelledAt).toLocaleDateString('id-ID') : '';
+  return `Cancelled: ${doc.cancelReason}` + (doc.cancelledBy ? ` · ${doc.cancelledBy}` : '') + (when ? ` · ${when}` : '');
+}
