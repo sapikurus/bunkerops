@@ -1,6 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
+import { getFunctions } from 'firebase/functions';
 
 const firebaseConfig = {
   apiKey:            import.meta.env.VITE_FIREBASE_API_KEY,
@@ -14,3 +15,5 @@ const firebaseConfig = {
 export const app  = initializeApp(firebaseConfig);
 export const db   = getFirestore(app);
 export const auth = getAuth(app);
+// Cloud Functions live in Singapore (asia-southeast1) — same region as functions/index.js.
+export const functions = getFunctions(app, 'asia-southeast1');

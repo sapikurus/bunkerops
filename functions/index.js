@@ -98,3 +98,95 @@ exports.onBastStatusChange = onDocumentWritten(`${COL.bast}/{bastId}`, async (ev
     throw err; // retry on transient errors
   }
 });
+
+// -----------------------------------------------------------------------------
+// getFinalPOs — read the final-PO list from the team's shared Google Sheet.
+//
+// Used by Commercial → PO CHECK to list BAST-done sales orders whose final PO
+// is not in the sheet yet, without anyone downloading a CSV.
+//
+// Security:
+// - The sheet stays PRIVATE. It is shared (Viewer) with this function's service
+//   account only; the function reads it with its own Google identity — no keys
+//   or passwords are stored anywhere.
+// - Only the "PO Reference" column is returned. Prices, amounts and payment
+//   data in the sheet never leave the server.
+// - Callable only by signed-in commercial / director / superadmin users (the
+//   same roles that see the Commercial page).
+// -----------------------------------------------------------------------------
+const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { GoogleAuth } = require('google-auth-library');
+
+const PO_SHEET = {
+  id:  '1C5Fh5_1I8cbEbTXXKeFA-NOIi9Zj54Y2Sqte6vF7vVo',  // OUTSTANDING_USI-PPS
+  tab: 'MASTER',
+};
+const OWNER_EMAIL = 'info@petroprimasejahtera.net';            // break-glass superadmin
+const PO_CHECK_ROLES = ['superadmin', 'director', 'commercial'];
+
+// Pull the "PO Reference" column out of the sheet's rows (header found by name,
+// so moving the column in the sheet doesn't break this).
+function extractPoColumn(values) {
+  const rows = Array.isArray(values) ? values : [];
+  const hi = rows.findIndex(r => (r || []).some(c => /^\s*po\s*ref/i.test(String(c || ''))));
+  if (hi < 0) return null;
+  const col = rows[hi].findIndex(c => /^\s*po\s*ref/i.test(String(c || '')));
+  const out = [];
+  for (const r of rows.slice(hi + 1)) {
+    const v = String((r || [])[col] ?? '').trim();
+    if (v) out.push(v);
+  }
+  return out;
+}
+
+const sheetsAuth = new GoogleAuth({ scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'] });
+
+exports.getFinalPOs = onCall(async (request) => {
+  // 1. Caller must be signed in with a commercial-capable role.
+  const auth = request.auth;
+  if (!auth) throw new HttpsError('unauthenticated', 'Sign in first.');
+  const email = String(auth.token?.email || '').toLowerCase();
+  let allowed = email === OWNER_EMAIL;
+  if (!allowed) {
+    const u = await db.collection('bunkerops_users').doc(auth.uid).get();
+    allowed = u.exists && PO_CHECK_ROLES.includes(u.data().role);
+  }
+  if (!allowed) {
+    throw new HttpsError('permission-denied', 'PO CHECK is limited to commercial, director and superadmin.');
+  }
+
+  // 2. Read the sheet tab with the function's own service account.
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${PO_SHEET.id}` +
+              `/values/${encodeURIComponent(PO_SHEET.tab)}?majorDimension=ROWS`;
+  let values;
+  try {
+    const client = await sheetsAuth.getClient();
+    const res = await client.request({ url });
+    values = res.data?.values || [];
+  } catch (err) {
+    const status = err?.response?.status;
+    const msg = String(err?.response?.data?.error?.message || err?.message || err);
+    let sa = 'this function\'s service account';
+    try { sa = (await sheetsAuth.getCredentials()).client_email || sa; } catch { /* best effort */ }
+    console.error(`getFinalPOs: sheet read failed (${status}): ${msg}`);
+    if (/has not been used|is disabled|SERVICE_DISABLED/i.test(msg)) {
+      throw new HttpsError('failed-precondition',
+        'The Google Sheets API is not enabled for this project. Enable it in Google Cloud Console → APIs & Services, then retry.');
+    }
+    if (status === 403 || status === 404) {
+      throw new HttpsError('failed-precondition',
+        `The function can't open the sheet. Share it as Viewer with ${sa}, then retry.`);
+    }
+    throw new HttpsError('internal', 'Could not read the PO sheet: ' + msg);
+  }
+
+  // 3. Return the PO column only.
+  const pos = extractPoColumn(values);
+  if (!pos) {
+    throw new HttpsError('failed-precondition',
+      `No "PO Reference" column found in the "${PO_SHEET.tab}" tab.`);
+  }
+  console.log(`getFinalPOs: ${pos.length} POs returned to ${email || auth.uid}.`);
+  return { pos, count: pos.length, tab: PO_SHEET.tab, fetchedAt: new Date().toISOString() };
+});
+
