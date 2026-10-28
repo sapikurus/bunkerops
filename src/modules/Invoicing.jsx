@@ -4,6 +4,7 @@ import { COL, PPN_PCT } from '../config';
 import { useCollection } from './useCollection';
 import { canCommercial } from '../roles';
 import { usePagination, PaginationBar, useIsNarrow, useSort, SortHeader, StatusPill, MobileSortBar } from './listUtils';
+import POCheck from './POCheck';
 
 // Commercial pricing-control module. Lists DELIVERED (non-cancelled) DOs with the
 // observed-liter received quantity from their BAST, and lets commercial/director/superadmin
@@ -138,6 +139,7 @@ export default function Invoicing({ role, user }) {
 
   // ---- Cargo type: PPS (default) vs MBSS. MBSS gets a different layout later. --
   const [cargo, setCargo] = useState('PPS');   // 'PPS' | 'MBSS'
+  const [poCheckOpen, setPoCheckOpen] = useState(false);   // final-PO check panel
 
   // Rows for the active cargo type only.
   const cargoRows = useMemo(() => rows.filter(r => r.cargo === cargo), [rows, cargo]);
@@ -364,13 +366,24 @@ export default function Invoicing({ role, user }) {
             Control/record only — invoices are issued elsewhere.
           </div>
         </div>
-        <button onClick={generateReconReport}
-          title="Client-facing list of delivered bunkerings not yet invoiced — no pricing shown"
-          style={{ ...s.btn('ghost'), fontSize: 11, whiteSpace: 'nowrap',
-            color: T.amber, borderColor: T.amber }}>
-          🧾 RECONCILIATION REPORT
-        </button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button onClick={() => setPoCheckOpen(o => !o)}
+            title="Completed sales orders whose final PO is not yet in the shared sheet"
+            style={{ ...s.btn('ghost'), fontSize: 11, whiteSpace: 'nowrap',
+              color: T.amber, borderColor: T.amber }}>
+            🔎 PO CHECK
+          </button>
+          <button onClick={generateReconReport}
+            title="Client-facing list of delivered bunkerings not yet invoiced — no pricing shown"
+            style={{ ...s.btn('ghost'), fontSize: 11, whiteSpace: 'nowrap',
+              color: T.amber, borderColor: T.amber }}>
+            🧾 RECONCILIATION REPORT
+          </button>
+        </div>
       </div>
+
+      {/* Final-PO check against the shared sheet (all cargo types) */}
+      {poCheckOpen && <POCheck rows={rows} onClose={() => setPoCheckOpen(false)} />}
 
       {/* Cargo-type toggle: PPS cargo (default) vs MBSS cargo */}
       <div style={{ display: 'flex', gap: 0, marginBottom: 16,
