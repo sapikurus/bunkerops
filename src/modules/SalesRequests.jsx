@@ -7,7 +7,8 @@ import VolumeInput from './VolumeInput';
 import { useFuelOpsMaster } from './useFuelOpsMaster';
 import { usePagination, PaginationBar, useIsNarrow, diffSOtoDO, useSort, SortHeader, StatusPill, MobileSortBar,
   ReasonDialog, useRefFilters, RefFilterInputs, DocLink, FocusBanner, cancelInfoLine } from './listUtils';
-import { auth } from '../firebase';
+import { auth, functions } from '../firebase';
+import { httpsCallable } from 'firebase/functions';
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
@@ -23,8 +24,10 @@ const STATUS_COLORS = {
   bast_done: '#a855f7', reconciled: T.green, cancelled: T.red,
 };
 const statusColor = st => STATUS_COLORS[st] || T.textDim;
-// Who may cancel a sales order (client cancelled the PO).
+// Who may cancel a sales order (client cancelled the PO) — and approve email drafts.
 const CANCEL_ROLES = ['superadmin', 'director', 'supervisor'];
+const isDraft = r => r.status === 'pending_approval';
+const fromEmail = r => r.source?.type === 'email';
 // Active statuses sort/show before terminal ones; cancelled sinks to the bottom.
 const STATUS_RANK = { pending_approval: 0, requested: 1, do_issued: 2, bast_done: 3, reconciled: 4, cancelled: 9 };
 
@@ -121,14 +124,13 @@ export default function SalesRequests({ role, focus, onNavigate, canOpen = () =>
   }, [listRows]);
 
   const { sorted: userSorted, sortKey, sortDir, toggle, setSort } = useSort(baseRows, sortCols);
-  // Keep cancelled at the bottom on top of whatever sort is active.
+  // Drafts waiting for approval pin to the top, cancelled sinks to the bottom,
+  // on top of whatever sort is active.
   const sortedRows = useMemo(() => {
-    return [...userSorted].sort((a, b) => {
-      const ac = a.status === 'cancelled' ? 1 : 0;
-      const bc = b.status === 'cancelled' ? 1 : 0;
-      return ac - bc;
-    });
+    const band = r => (isDraft(r) ? 0 : r.status === 'cancelled' ? 2 : 1);
+    return [...userSorted].sort((a, b) => band(a) - band(b));
   }, [userSorted]);
+  const draftCount = useMemo(() => sr.data.filter(isDraft).length, [sr.data]);
 
   // Map SO id -> stale DO discrepancy count (item 1: flag SOs whose DO is out of sync).
   const staleBySO = useMemo(() => {
@@ -146,7 +148,17 @@ export default function SalesRequests({ role, focus, onNavigate, canOpen = () =>
   const pg = usePagination(sortedRows, 20);
 
   const startNew  = () => { setForm({ ...BLANK }); setEditId(null); };
-  const startEdit = (r) => { setForm({ ...BLANK, ...r }); setEditId(r.id); };
+  const startEdit = (r) => {
+    const f = { ...BLANK, ...r };
+    // Email draft: pick the fuel type the email names (e.g. "B50") when it's unambiguous.
+    if (!f.fuelTypeId && f.fuelTypeName) {
+      const hint = String(f.fuelTypeName).toUpperCase().replace(/\s+/g, '');
+      const hits = fuelTypes.filter(ft => [ft.shortName, ft.name]
+        .some(x => String(x || '').toUpperCase().replace(/\s+/g, '').includes(hint)));
+      if (hits.length === 1) f.fuelTypeId = hits[0].id;
+    }
+    setForm(f); setEditId(r.id);
+  };
   const cancel    = () => { setForm(null); setEditId(null); };
 
   const sf = (k, v) => setForm(f => ({ ...f, [k]: v }));
@@ -157,14 +169,27 @@ export default function SalesRequests({ role, focus, onNavigate, canOpen = () =>
       deliveryLocation: f.deliveryLocation || (node?.location || '') }));
   };
 
-  const save = async () => {
-    if (!form.clientId || !form.entityId) { alert('Client and Entity are required.'); return; }
-    if (!form.scheme || !form.nodeId)     { alert('Scheme and Node are required.'); return; }
-    if (!form.requestedVolumeL)           { alert('Requested volume is required.'); return; }
+  // mode: 'save' (normal create/edit), 'draft' (keep an email draft pending),
+  // 'approve' (supervisor approves an email draft → SO number issued, status requested).
+  const save = async (mode = 'save') => {
+    const draftOnly = mode === 'draft';
+    if (!draftOnly) {
+      if (!form.clientId || !form.entityId) { alert('Client and Entity are required.'); return; }
+      if (!form.scheme || !form.nodeId)     { alert('Scheme and Node are required.'); return; }
+      if (!form.requestedVolumeL)           { alert('Requested volume is required.'); return; }
+      if (mode === 'approve' && !form.vesselName) { alert('Vessel is required.'); return; }
+      if (mode === 'approve' && form.galleyPoRef.trim()) {
+        const dup = sr.data.find(r => r.id !== editId && r.status !== 'cancelled' &&
+          normPORef(r.galleyPoRef) === normPORef(form.galleyPoRef));
+        if (dup) { alert(`PO ${form.galleyPoRef} is already on ${dup.soNumber || 'another draft'}. Reject this draft instead.`); return; }
+      }
+    }
+    if (mode === 'save' && editId && isDraft(form)) { alert('Use APPROVE or SAVE DRAFT for an email draft.'); return; }
     const ft = fuelTypes.find(f => f.id === form.fuelTypeId);
     const node = nodes.find(n => n.id === form.nodeId);
-    let soNumber = form.soNumber;
-    if (!editId) {
+    const sch = SCHEMES[form.scheme] || SCHEMES.PPS_SALE;
+    let soNumber = form.soNumber || '';
+    if (!editId || (mode === 'approve' && !soNumber)) {
       const d = new Date(form.requestedDate);
       const seq = await allocateNumber('so', d.getFullYear());
       const issuerCode = ISSUERS[SCHEMES[form.scheme].issuer]?.code || 'PPS';
@@ -179,8 +204,8 @@ export default function SalesRequests({ role, focus, onNavigate, canOpen = () =>
       entityName: selEntity?.name || '',
       vesselName: form.vesselName,
       scheme: form.scheme,
-      bucket: SCHEMES[form.scheme].bucket,
-      issuerKey: SCHEMES[form.scheme].issuer,
+      bucket: sch.bucket,
+      issuerKey: sch.issuer,
       nodeId: form.nodeId,
       nodeName: node?.name || '',
       nodeCode: node?.code || '',
@@ -188,13 +213,23 @@ export default function SalesRequests({ role, focus, onNavigate, canOpen = () =>
       fuelTypeName: ft?.name || form.fuelTypeName || '',
       fuelTypeShort: ft?.shortName || '',
       requestedVolumeL: Number(form.requestedVolumeL) || 0,
-      deliveryLocation: form.deliveryLocation.trim(),
+      deliveryLocation: (form.deliveryLocation || '').trim(),
       requestedDate: form.requestedDate,
       status: form.status || 'requested',
     };
-    if (editId) await sr.update(editId, payload);
-    else        await sr.add(payload);
-    cancel();
+    if (mode === 'approve') {
+      payload.status = 'requested';
+      payload.approvedBy = auth.currentUser?.email || '';
+      payload.approvedAt = new Date().toISOString();
+    }
+    if (draftOnly) payload.status = 'pending_approval';
+    try {
+      if (editId) await sr.update(editId, payload);
+      else        await sr.add(payload);
+      cancel();
+    } catch (e) {
+      alert('Error saving: ' + e.message);
+    }
   };
 
   // Cancel an SO (client cancelled the PO). Nothing is ever deleted: the SO, its
@@ -207,7 +242,7 @@ export default function SalesRequests({ role, focus, onNavigate, canOpen = () =>
 
   const cancelSO = (r) => {
     if (r.status === 'cancelled' || !canCancel) return;
-    const theDO = doBySO[r.id] || null;
+    const theDO = isDraft(r) ? null : doBySO[r.id] || null;
     const theBAST = theDO ? bastByDO[theDO.id] || null : null;
     if (theBAST && theBAST.status !== 'blank' && theBAST.status !== 'cancelled') {
       alert(`Cannot cancel ${r.soNumber}: BAST ${theBAST.nomorBast} is filled (delivery recorded).\n\n` +
@@ -234,6 +269,27 @@ export default function SalesRequests({ role, focus, onNavigate, canOpen = () =>
     }
   };
 
+  // 📧 CHECK EMAIL — read the mailbox now (same idea as PO CHECK).
+  const [mailBusy, setMailBusy] = useState(false);
+  const [mailMsg, setMailMsg]   = useState(null);   // { ok, text }
+  const checkEmail = async () => {
+    setMailBusy(true); setMailMsg(null);
+    try {
+      const r = (await httpsCallable(functions, 'emailIntakeControl', { timeout: 300000 })({ action: 'check' })).data || {};
+      if (r.busy) setMailMsg({ ok: true, text: r.note });
+      else setMailMsg({ ok: !r.rejected && !r.errors, text:
+        r.emails === 0 ? 'No new Daidan PO emails.'
+          : `${r.emails} new email${r.emails > 1 ? 's' : ''} · ${r.created} draft${r.created === 1 ? '' : 's'} created` +
+            (r.skipped ? ` · ${r.skipped} PO${r.skipped > 1 ? 's' : ''} already in BunkerOps` : '') +
+            (r.rejected ? ` · ${r.rejected} rejected (sender not verified)` : '') +
+            (r.errors ? ` · ${r.errors} failed, will retry` : '') });
+    } catch (e) {
+      setMailMsg({ ok: false, text: e.message });
+    } finally {
+      setMailBusy(false);
+    }
+  };
+
   const fmtL = n => (Number(n) || 0).toLocaleString('id-ID');
 
   const schemeLabel = r => `${r.scheme === 'PPS_SALE' ? 'PPS Sale' : 'Non-PPS'} · ${r.bucket}`;
@@ -249,8 +305,33 @@ export default function SalesRequests({ role, focus, onNavigate, canOpen = () =>
             The trigger document. Scheme choice drives bucket, DO issuer, and revenue treatment.
           </div>
         </div>
-        {!form && <button onClick={startNew} style={s.btn('primary')}>+ NEW SALES ORDER</button>}
+        {!form && (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {canCancel && (
+              <button onClick={checkEmail} disabled={mailBusy} title="Read new Daidan PO emails into drafts"
+                style={{ ...s.btn('ghost'), opacity: mailBusy ? 0.6 : 1 }}>
+                {mailBusy ? 'CHECKING EMAIL…' : '📧 CHECK EMAIL'}
+              </button>
+            )}
+            <button onClick={startNew} style={s.btn('primary')}>+ NEW SALES ORDER</button>
+          </div>
+        )}
       </div>
+
+      {mailMsg && !form && (
+        <div style={{ fontSize: 11, color: mailMsg.ok ? T.green : T.red, marginBottom: 12 }}>
+          {mailMsg.text}{' '}
+          <span onClick={() => setMailMsg(null)} style={{ color: T.textDim, cursor: 'pointer' }}>✕</span>
+        </div>
+      )}
+
+      {!form && !focus && draftCount > 0 && (
+        <div style={{ border: `1px solid ${STATUS_COLORS.pending_approval}`, borderRadius: 4, padding: '10px 12px',
+          marginBottom: 16, fontSize: 12, color: T.text, background: T.amberGlow }}>
+          📧 <b>{draftCount}</b> sales order draft{draftCount > 1 ? 's' : ''} from client email waiting for approval
+          {canCancel ? ' — open REVIEW to check, complete and approve.' : ' — a supervisor needs to approve.'}
+        </div>
+      )}
 
       {/* Arrived via a link: one record only */}
       {focus && <FocusBanner label={focus.label} onClear={onClearFocus} />}
@@ -301,8 +382,11 @@ export default function SalesRequests({ role, focus, onNavigate, canOpen = () =>
       {form && (
         <div style={{ ...s.card, marginBottom: 20 }}>
           <div style={{ fontSize: 11, color: T.amber, letterSpacing: 1, marginBottom: 14 }}>
-            {editId ? `EDIT ${form.soNumber || 'SALES ORDER'}` : 'NEW SALES ORDER'}
+            {editId && isDraft(form) ? 'REVIEW DRAFT FROM EMAIL'
+              : editId ? `EDIT ${form.soNumber || 'SALES ORDER'}` : 'NEW SALES ORDER'}
           </div>
+
+          {editId && fromEmail(form) && <EmailSource r={form} />}
 
           {editId && staleBySO[editId] > 0 && (
             <div style={{
@@ -337,6 +421,9 @@ export default function SalesRequests({ role, focus, onNavigate, canOpen = () =>
               <select style={s.input} value={form.vesselName} disabled={!selEntity}
                 onChange={e => sf('vesselName', e.target.value)}>
                 <option value="">— select —</option>
+                {form.vesselName && !vessels.some(v => v.name === form.vesselName) && (
+                  <option value={form.vesselName}>{form.vesselName} (not in vessel list)</option>
+                )}
                 {vessels.map(v => <option key={v.id} value={v.name}>{v.name}</option>)}
               </select>
             </div>
@@ -382,6 +469,9 @@ export default function SalesRequests({ role, focus, onNavigate, canOpen = () =>
                   {fuelTypes.map(ft => <option key={ft.id} value={ft.id}>{ft.name}</option>)}
                 </select>
               )}
+              {fromEmail(form) && isDraft(form) && form.fuelTypeName && !ftError && (
+                <div style={{ fontSize: 10, color: T.textDim, marginTop: 3 }}>Email says: {form.fuelTypeName}</div>
+              )}
             </div>
             <div>
               <label style={s.label}>Requested Volume (L)</label>
@@ -409,8 +499,15 @@ export default function SalesRequests({ role, focus, onNavigate, canOpen = () =>
             </div>
           </div>
 
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={save} style={s.btn('primary')}>{editId ? 'SAVE' : 'CREATE'}</button>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {editId && isDraft(form) ? (<>
+              {canCancel && (
+                <button onClick={() => save('approve')} style={s.btn('primary')}>APPROVE & ISSUE SO NUMBER</button>
+              )}
+              <button onClick={() => save('draft')} style={s.btn(canCancel ? 'ghost' : 'primary')}>SAVE DRAFT</button>
+            </>) : (
+              <button onClick={() => save()} style={s.btn('primary')}>{editId ? 'SAVE' : 'CREATE'}</button>
+            )}
             <button onClick={cancel} style={s.btn('ghost')}>CANCEL</button>
           </div>
         </div>
@@ -434,7 +531,9 @@ export default function SalesRequests({ role, focus, onNavigate, canOpen = () =>
           {pg.pageRows.map(r => (
             <div key={r.id} style={{ ...s.card, padding: 14 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                <span style={{ fontFamily: T.font, color: T.amber, fontSize: 11 }}>{r.soNumber || '—'}</span>
+                <span style={{ fontFamily: T.font, color: T.amber, fontSize: 11 }}>
+                  {r.soNumber || (isDraft(r) ? 'DRAFT' : '—')} {fromEmail(r) && <EmailBadge />}
+                </span>
                 <StatusPill status={r.status} color={statusColor(r.status)} />
               </div>
               <div style={{ fontSize: 10, color: T.textFaint, marginBottom: 4 }}>PO {r.galleyPoRef || '—'}</div>
@@ -463,10 +562,10 @@ export default function SalesRequests({ role, focus, onNavigate, canOpen = () =>
               )}
               <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
                 {r.status !== 'cancelled' && (
-                  <button onClick={() => startEdit(r)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10 }}>EDIT</button>
+                  <button onClick={() => startEdit(r)} style={{ ...s.btn(isDraft(r) ? 'primary' : 'ghost'), padding: '5px 12px', fontSize: 10 }}>{isDraft(r) ? 'REVIEW' : 'EDIT'}</button>
                 )}
                 {r.status !== 'cancelled' && canCancel && (
-                  <button onClick={() => cancelSO(r)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10, color: T.red, borderColor: T.red }}>CANCEL</button>
+                  <button onClick={() => cancelSO(r)} style={{ ...s.btn('ghost'), padding: '5px 12px', fontSize: 10, color: T.red, borderColor: T.red }}>{isDraft(r) ? 'REJECT' : 'CANCEL'}</button>
                 )}
               </div>
             </div>
@@ -495,7 +594,8 @@ export default function SalesRequests({ role, focus, onNavigate, canOpen = () =>
               {pg.pageRows.map(r => (
                 <tr key={r.id}>
                   <td style={{ ...s.td, fontFamily: T.font, color: T.amber, fontSize: 10 }}>
-                    {r.soNumber || '—'}
+                    {r.soNumber || (isDraft(r) ? 'DRAFT' : '—')}
+                    {fromEmail(r) && <> <EmailBadge /></>}
                     {staleBySO[r.id] > 0 && (
                       <span title={`Linked DO out of sync (${staleBySO[r.id]} field(s))`}
                         style={{ color: T.amber, marginLeft: 6 }}>⚠</span>
@@ -527,10 +627,10 @@ export default function SalesRequests({ role, focus, onNavigate, canOpen = () =>
                   </td>
                   <td style={{ ...s.td, textAlign: 'right', whiteSpace: 'nowrap' }}>
                     {r.status !== 'cancelled' && (
-                      <button onClick={() => startEdit(r)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6 }}>EDIT</button>
+                      <button onClick={() => startEdit(r)} style={{ ...s.btn(isDraft(r) ? 'primary' : 'ghost'), padding: '3px 10px', fontSize: 10, marginRight: 6 }}>{isDraft(r) ? 'REVIEW' : 'EDIT'}</button>
                     )}
                     {r.status !== 'cancelled' && canCancel && (
-                      <button onClick={() => cancelSO(r)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, color: T.red, borderColor: T.red }}>CANCEL</button>
+                      <button onClick={() => cancelSO(r)} style={{ ...s.btn('ghost'), padding: '3px 10px', fontSize: 10, color: T.red, borderColor: T.red }}>{isDraft(r) ? 'REJECT' : 'CANCEL'}</button>
                     )}
                   </td>
                 </tr>
@@ -542,6 +642,13 @@ export default function SalesRequests({ role, focus, onNavigate, canOpen = () =>
       )}
 
       {cancelTarget && (
+        isDraft(cancelTarget.r) ? (
+        <ReasonDialog danger title={`REJECT DRAFT ${cancelTarget.r.galleyPoRef || ''}`.trim()}
+          message={`This email draft is marked cancelled with your reason. No SO number is used.\n\nNothing is deleted. The same email will not create it again; a new email from the client with this PO will create a fresh draft.`}
+          placeholder="e.g. Duplicate request / wrong PO / client resent corrected email"
+          confirmLabel="REJECT DRAFT"
+          onConfirm={doCancel} onCancel={() => setCancelTarget(null)} />
+        ) :
         <ReasonDialog danger title={`CANCEL ${cancelTarget.r.soNumber || 'SALES ORDER'}`}
           message={
             `The sales order keeps its number and is marked cancelled.` +
@@ -556,6 +663,59 @@ export default function SalesRequests({ role, focus, onNavigate, canOpen = () =>
       {ftError && (
         <div style={{ marginTop: 16, fontSize: 10, color: T.textFaint }}>
           Note: couldn't load fuel types from FuelOps ({ftError}). Fuel type falls back to manual entry.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Same PO written two ways (PO48-2610-0010 == P048-2610-10) counts as one.
+function normPORef(v) {
+  const t = String(v ?? '').toUpperCase().replace(/\s+/g, '');
+  const m = t.match(/^P[O0]?(\d+)-(\d+)-(\d+)$/);
+  return m ? `P${Number(m[1])}-${m[2]}-${Number(m[3])}` : t.replace(/[^A-Z0-9]/g, '');
+}
+
+function EmailBadge() {
+  return (
+    <span title="Created from a client email" style={{
+      fontSize: 9, fontWeight: 700, letterSpacing: 0.5,
+      color: STATUS_COLORS.pending_approval, border: `1px solid ${STATUS_COLORS.pending_approval}`,
+      borderRadius: 999, padding: '1px 6px', whiteSpace: 'nowrap',
+    }}>📧 EMAIL</span>
+  );
+}
+
+// What the email said, for the reviewer: sender, subject, notes from the reader, excerpt.
+function EmailSource({ r }) {
+  const [open, setOpen] = useState(false);
+  const src = r.source || {};
+  const when = src.receivedAt ? new Date(src.receivedAt).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' }) : '';
+  const notes = r.intakeNotes || [];
+  return (
+    <div style={{ border: `1px solid ${T.border}`, borderRadius: 4, padding: '10px 12px', marginBottom: 14,
+      fontSize: 11, color: T.text }}>
+      <div style={{ fontSize: 10, color: T.textDim, letterSpacing: 1.2, marginBottom: 6 }}>📧 FROM CLIENT EMAIL</div>
+      <div><span style={{ color: T.textDim }}>From: </span>{src.from}</div>
+      <div><span style={{ color: T.textDim }}>Subject: </span>{src.subject || '—'}</div>
+      {when && <div><span style={{ color: T.textDim }}>Received: </span>{when}</div>}
+      {r.entityCodeFromEmail && <div><span style={{ color: T.textDim }}>Entity in email: </span>{r.entityCodeFromEmail}</div>}
+      {r.picContact && <div><span style={{ color: T.textDim }}>PIC: </span>{r.picContact}</div>}
+      {r.approvedBy && <div><span style={{ color: T.textDim }}>Approved by: </span>{r.approvedBy}</div>}
+      {notes.length > 0 && (
+        <ul style={{ margin: '8px 0 0', paddingLeft: 18, color: T.amber }}>
+          {notes.map((n, i) => <li key={i}>{n}</li>)}
+        </ul>
+      )}
+      {src.excerpt && (
+        <div style={{ marginTop: 8 }}>
+          <span onClick={() => setOpen(o => !o)} style={{ color: T.amber, cursor: 'pointer', textDecoration: 'underline', fontSize: 10 }}>
+            {open ? 'Hide email text' : 'Show email text'}
+          </span>
+          {open && (
+            <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit', fontSize: 10, color: T.textDim,
+              background: T.bg, padding: 8, borderRadius: 4, marginTop: 6, maxHeight: 260, overflow: 'auto' }}>{src.excerpt}</pre>
+          )}
         </div>
       )}
     </div>

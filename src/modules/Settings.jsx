@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { db } from '../firebase';
+import { db, functions } from '../firebase';
+import { httpsCallable } from 'firebase/functions';
 import { doc, getDoc } from 'firebase/firestore';
 import { T, s } from '../tokens';
 import { COL } from '../config';
@@ -77,9 +78,50 @@ function GeneralSettings() {
         {seedRow('BAST', 'bast', bastVal, bastSeed, setBastSeed)}
         {msg && <div style={{ marginTop: 12, fontSize: 11, color: T.green }}>{msg}</div>}
       </div>
-      <div style={{ fontSize: 10, color: T.textFaint, marginTop: 12, lineHeight: 1.6 }}>
-        More general settings (notifications, etc.) will live here later.
+      <EmailIntakeSetting />
+    </div>
+  );
+}
+
+// Email intake: auto-check the mailbox every 10 minutes, or only on
+// Sales Requests → 📧 CHECK EMAIL. The switch lives in the mailbox script.
+function EmailIntakeSetting() {
+  const [st, setSt]     = useState(null);   // { auto, lastRun, autoChanged, mailbox }
+  const [busy, setBusy] = useState(false);
+  const [err, setErr]   = useState('');
+  const call = async (data) => {
+    setBusy(true); setErr('');
+    try { setSt((await httpsCallable(functions, 'emailIntakeControl')(data)).data); }
+    catch (e) { setErr(e.message); }
+    finally { setBusy(false); }
+  };
+  useEffect(() => { call({ action: 'status' }); }, []);
+  const when = iso => (iso ? new Date(iso).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' }) : '');
+
+  return (
+    <div style={{ ...s.card, marginTop: 20 }}>
+      <div style={{ fontSize: 12, color: T.text, marginBottom: 4 }}>Email intake (Daidan PO emails)</div>
+      <div style={{ fontSize: 11, color: T.textDim, marginBottom: 12, lineHeight: 1.6 }}>
+        New Daidan PO emails become draft sales orders that a supervisor must approve.
+        Off: drafts are made only when someone presses 📧 CHECK EMAIL on Sales Requests.
       </div>
+      {st && (
+        <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, color: T.text, cursor: busy ? 'wait' : 'pointer' }}>
+          <input type="checkbox" checked={!!st.auto} disabled={busy}
+            onChange={e => call({ action: 'setAuto', auto: e.target.checked })} />
+          Check automatically every 10 minutes
+          <span style={{ color: st.auto ? T.green : T.textDim, fontWeight: 700, fontSize: 11 }}>{st.auto ? 'ON' : 'OFF'}</span>
+        </label>
+      )}
+      {!st && !err && <div style={{ fontSize: 11, color: T.textDim }}>Loading…</div>}
+      {st && (
+        <div style={{ fontSize: 10, color: T.textFaint, marginTop: 10, lineHeight: 1.7 }}>
+          {st.mailbox && <div>Mailbox: {st.mailbox}</div>}
+          {st.lastRun && <div>Last check: {when(st.lastRun.at)} ({st.lastRun.how}) · {st.lastRun.emails} email(s), {st.lastRun.created} draft(s)</div>}
+          {st.autoChanged && <div>Switched {st.autoChanged.auto ? 'on' : 'off'} by {st.autoChanged.by} · {when(st.autoChanged.at)}</div>}
+        </div>
+      )}
+      {err && <div style={{ fontSize: 11, color: T.red, marginTop: 8 }}>{err}</div>}
     </div>
   );
 }
