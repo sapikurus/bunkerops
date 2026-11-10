@@ -5,6 +5,7 @@ import { useCollection } from './useCollection';
 import { canCommercial } from '../roles';
 import { usePagination, PaginationBar, useIsNarrow, useSort, SortHeader, StatusPill, MobileSortBar } from './listUtils';
 import POCheck from './POCheck';
+import ReconReport from './ReconReport';
 
 // Commercial pricing-control module. Lists DELIVERED (non-cancelled) DOs with the
 // observed-liter received quantity from their BAST, and lets commercial/director/superadmin
@@ -261,98 +262,12 @@ export default function Invoicing({ role, user }) {
       style={{ ...s.input, width: 120, fontSize: 11 }} />
   );
 
-  // ---- Client-facing reconciliation report ---------------------------------
-  // Delivered bunkerings (have a BAST) that are NOT yet invoiced/priced — the
-  // "done but not paid yet" list to reconcile with the client before invoicing.
-  // NO pricing is shown: DO no, BAST no, client PO ref, vessel, qty, BAST date.
-  // Respects the active filters (so it can be scoped to one client / period).
-  const reconRows = useMemo(
-    () => filteredRows.filter(r => r.hasBast && !r.priced),
-    [filteredRows]);
-
-  const generateReconReport = () => {
-    if (reconRows.length === 0) {
-      alert('No delivered, not-yet-invoiced bunkerings match the current filters.');
-      return;
-    }
-    const esc = (v) => String(v ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
-    const totalQty = reconRows.reduce((a, r) => a + (Number(r.qty) || 0), 0);
-    const clientLabel = fClient || (new Set(reconRows.map(r => r.client)).size === 1 ? reconRows[0].client : 'All clients');
-    const period = (fFrom || fTo)
-      ? `${fFrom || '…'} to ${fTo || '…'}`
-      : 'All dates';
-    const printedAt = new Date().toLocaleString('id-ID');
-
-    const bodyRows = reconRows.map((r, i) => `
-      <tr>
-        <td class="c">${i + 1}</td>
-        <td>${esc(r.brNo || '—')}</td>
-        <td>${esc(r.bastNo || '—')}</td>
-        <td>${esc(r.poRef || '—')}</td>
-        <td>${esc(r.vessel || '—')}</td>
-        <td class="r">${(Number(r.qty) || 0).toLocaleString('id-ID')}</td>
-        <td class="c">${esc(r.bastDate || '—')}</td>
-      </tr>`).join('');
-
-    const html = `<!doctype html><html><head><meta charset="utf-8">
-<title>Bunker Delivery Reconciliation</title>
-<style>
-  * { box-sizing: border-box; }
-  body { font-family: Arial, Helvetica, sans-serif; color: #111; margin: 32px; font-size: 12px; }
-  h1 { font-size: 18px; margin: 0 0 2px; letter-spacing: .5px; }
-  .sub { color: #555; font-size: 11px; margin-bottom: 16px; }
-  .meta { width: 100%; border-collapse: collapse; margin-bottom: 14px; font-size: 11px; }
-  .meta td { padding: 2px 6px; }
-  .meta .k { color: #666; width: 120px; }
-  table.data { width: 100%; border-collapse: collapse; }
-  table.data th, table.data td { border: 1px solid #bbb; padding: 6px 8px; }
-  table.data th { background: #f2f2f2; text-align: left; font-size: 10px; letter-spacing: .5px; text-transform: uppercase; }
-  td.r { text-align: right; font-variant-numeric: tabular-nums; }
-  td.c { text-align: center; }
-  tfoot td { font-weight: bold; background: #fafafa; }
-  .note { margin-top: 18px; font-size: 10px; color: #666; }
-  .sign { margin-top: 48px; display: flex; justify-content: space-between; }
-  .sign div { width: 44%; }
-  .sign .line { border-top: 1px solid #333; margin-top: 56px; padding-top: 4px; text-align: center; font-size: 10px; color: #444; }
-  @media print { body { margin: 14mm; } }
-</style></head>
-<body>
-  <h1>BUNKER DELIVERY RECONCILIATION</h1>
-  <div class="sub">Delivered bunkerings pending invoicing — for reconciliation prior to invoice issuance.</div>
-  <table class="meta">
-    <tr><td class="k">Client</td><td>${esc(clientLabel)}</td><td class="k">Period</td><td>${esc(period)}</td></tr>
-    <tr><td class="k">Deliveries</td><td>${reconRows.length}</td><td class="k">Printed</td><td>${esc(printedAt)}</td></tr>
-  </table>
-  <table class="data">
-    <thead>
-      <tr>
-        <th>#</th><th>DO Number</th><th>BAST Number</th><th>Client PO Ref</th>
-        <th>Vessel</th><th>Qty (L)</th><th>BAST Date</th>
-      </tr>
-    </thead>
-    <tbody>${bodyRows}</tbody>
-    <tfoot>
-      <tr>
-        <td colspan="5" style="text-align:right">TOTAL QUANTITY (L)</td>
-        <td class="r">${totalQty.toLocaleString('id-ID')}</td>
-        <td></td>
-      </tr>
-    </tfoot>
-  </table>
-  <div class="note">Quantities are the observed liters received per the signed BAST. This document lists
-    deliveries not yet invoiced and is issued for quantity reconciliation only.</div>
-  <div class="sign">
-    <div><div class="line">Prepared by (PPS)</div></div>
-    <div><div class="line">Acknowledged by (Client)</div></div>
-  </div>
-  <script>setTimeout(function(){ window.print(); }, 350);</script>
-</body></html>`;
-
-    const w = window.open('', '_blank');
-    if (!w) { alert('Pop-up blocked — allow pop-ups to print the report.'); return; }
-    w.document.write(html);
-    w.document.close();
-  };
+  // ---- Reconciliation report (options panel → PDF / Excel) ---------------
+  // Uses the filtered rows of the active cargo tab; the panel chooses scope,
+  // columns and whether prices appear.
+  const [reconOpen, setReconOpen] = useState(false);
+  const reconClientLabel = fClient || (new Set(filteredRows.map(r => r.client)).size === 1 ? filteredRows[0].client : 'All clients');
+  const reconPeriod = (fFrom || fTo) ? `${fFrom || '…'} to ${fTo || '…'}` : 'All dates';
 
   return (
     <div style={{ padding: narrow ? 16 : 40, maxWidth: 1200 }}>
@@ -373,8 +288,8 @@ export default function Invoicing({ role, user }) {
               color: T.amber, borderColor: T.amber }}>
             🔎 PO CHECK
           </button>
-          <button onClick={generateReconReport}
-            title="Client-facing list of delivered bunkerings not yet invoiced — no pricing shown"
+          <button onClick={() => setReconOpen(o => !o)}
+            title="Report to reconcile with the buyer — choose bunkerings, columns and prices; PDF or Excel"
             style={{ ...s.btn('ghost'), fontSize: 11, whiteSpace: 'nowrap',
               color: T.amber, borderColor: T.amber }}>
             🧾 RECONCILIATION REPORT
@@ -384,6 +299,12 @@ export default function Invoicing({ role, user }) {
 
       {/* Final-PO check against the shared sheet (all cargo types) */}
       {poCheckOpen && <POCheck rows={rows} onClose={() => setPoCheckOpen(false)} />}
+
+      {/* Reconciliation report options (uses the filters below) */}
+      {reconOpen && (
+        <ReconReport rows={filteredRows} clientLabel={reconClientLabel} period={reconPeriod}
+          statusLabel={st => SO_STATUS_LABELS[st] || st} onClose={() => setReconOpen(false)} />
+      )}
 
       {/* Cargo-type toggle: PPS cargo (default) vs MBSS cargo */}
       <div style={{ display: 'flex', gap: 0, marginBottom: 16,

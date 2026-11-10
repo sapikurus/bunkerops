@@ -223,7 +223,7 @@ const { onRequest } = require('firebase-functions/v2/https');
 const { defineSecret } = require('firebase-functions/params');
 const { FieldValue } = require('firebase-admin/firestore');
 const crypto = require('crypto');
-const { parsePOEmail, normPO, matchEntity, matchVessel } = require('./poEmailParser');
+const { parsePOEmail, normPO, matchVessel, resolveEntity, isOfficialPO, poNumbers } = require('./poEmailParser');
 
 const INGEST_SECRET = defineSecret('EMAIL_INGEST_SECRET');
 const ALLOWED_SENDER_DOMAINS = ['daidan.co.id'];
@@ -291,7 +291,13 @@ exports.ingestPOEmail = onRequest({ secrets: [INGEST_SECRET], cors: false }, asy
   }
 
   try {
-    const parsed = parsePOEmail({ html, text });
+    // Official PO for an order already requested: never creates a draft.
+    if (isOfficialPO(subject)) {
+      const pos = poNumbers(`${subject || ''}\n${text || ''}`);
+      await intakeRef.update({ status: 'official-po', pos });
+      return res.json({ created: [], skipped: [], officialPO: pos, note: 'official PO email — no draft created' });
+    }
+    const parsed = parsePOEmail({ html, text, subject });
     if (!parsed.rows.length) {
       await intakeRef.update({ status: 'no-rows', method: parsed.method });
       return res.json({ created: [], skipped: [], note: 'no PO rows found' });
@@ -303,8 +309,10 @@ exports.ingestPOEmail = onRequest({ secrets: [INGEST_SECRET], cors: false }, asy
     ]);
     const clients = clientsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     const existing = new Map();
+    const history = [];
     for (const d of soSnap.docs) {
       const so = d.data();
+      if (so.status !== 'cancelled' && so.entityId) history.push({ galleyPoRef: so.galleyPoRef, clientId: so.clientId, entityId: so.entityId });
       if (so.status === 'cancelled' || !so.galleyPoRef) continue;
       existing.set(normPO(so.galleyPoRef), { id: d.id, soNumber: so.soNumber || '(draft)' });
     }
@@ -318,8 +326,8 @@ exports.ingestPOEmail = onRequest({ secrets: [INGEST_SECRET], cors: false }, asy
       if (dup) { skipped.push({ po: row.po, reason: `already in BunkerOps (${dup.soNumber})` }); continue; }
 
       const notes = [...row.warnings];
-      const ent = matchEntity(clients, row.entityCode);
-      if (ent.note) notes.push(ent.note);
+      const ent = resolveEntity(clients, { code: row.entityCode, vessel: row.vessel, po: row.po }, history);
+      notes.push(...ent.notes.filter(Boolean));
       let vesselName = String(row.vessel || '').toUpperCase();
       if (ent.match) {
         const v = matchVessel(ent.match.entity, row.vessel);

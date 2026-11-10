@@ -7,7 +7,8 @@
 // Order of attempts:
 //   1. HTML table   — Gmail keeps the original table in the HTML body.
 //   2. Plain text   — the same table flattened to one cell per line.
-//   3. PO numbers   — last resort: every Daidan-style PO found, other fields blank.
+// No table → no drafts. (Loose PO numbers in an email — e.g. an "official PO"
+// cover email with the PO as a PDF — never create sales orders.)
 // Anything that can't be read cleanly is left blank and noted in `warnings`;
 // a supervisor completes it before approving.
 
@@ -116,39 +117,38 @@ function fromText(text) {
   return out;
 }
 
-// 3. Last resort: PO numbers only.
-function fromPoNumbers(text) {
-  const seen = new Set(); const out = [];
-  for (const m of String(text || '').match(PO_RE) || []) {
-    const po = m.toUpperCase();
-    if (seen.has(po)) continue;
-    seen.add(po);
-    out.push({ po, vessel: '', entityCode: '', location: '', qtyL: null, pic: '',
-      warnings: ['only the PO number could be read — fill in the other fields'] });
-  }
-  return out;
+// Every PO number in the text (used to recognise official-PO emails).
+function poNumbers(text) {
+  return [...new Set((String(text || '').match(PO_RE) || []).map(m => m.toUpperCase()))];
 }
 
-// Fuel mentioned in the text (e.g. "supply fuel B50"), as a hint for the reviewer.
+// An "official PO" email: the formal PO for an order already requested.
+// Recognised by its subject ("OFFICIAL PO SEREIA 87", "Official P.O. …").
+const isOfficialPO = (subject) => /\bofficial\s*p\.?\s*o\b/i.test(String(subject || ''));
+
+// Fuel named in the subject or text, as a hint for the reviewer. The blend
+// (B40/B50) wins over the generic "Biosolar": "Fuel Biosolar B50" → B50.
 function fuelHint(text) {
-  const m = String(text || '').match(/\b(B\d{2}|HSD|MFO|LSFO|HSFO|MGO|Bio\s*Solar)\b/i);
-  return m ? m[1].toUpperCase().replace(/\s+/g, ' ') : '';
+  const t = String(text || '');
+  const blend = t.match(/\bB(\d{2})\b/i);
+  if (blend) return `B${blend[1]}`;
+  const m = t.match(/\b(HSD|MFO|LSFO|HSFO|MGO|Bio\s*Solar)\b/i);
+  return m ? m[1].toUpperCase().replace(/\s+/g, '') : '';
 }
 
 /**
  * Parse a PO-request email.
  * @param {{html?: string, text?: string}} msg
- * @returns {{ rows: object[], method: 'html'|'text'|'po-only'|'none', fuelHint: string }}
+ * @returns {{ rows: object[], method: 'html'|'text'|'none', fuelHint: string }}
  */
-function parsePOEmail({ html, text }) {
+function parsePOEmail({ html, text, subject }) {
   const plain = text || cellText(html);
   let rows = fromHtml(html); let method = 'html';
-  if (!rows.length) { rows = fromText(text); method = 'text'; }
-  if (!rows.length) { rows = fromPoNumbers(plain); method = rows.length ? 'po-only' : 'none'; }
+  if (!rows.length) { rows = fromText(text); method = rows.length ? 'text' : 'none'; }
   // Same PO twice in one email (e.g. quoted twice) → keep the first.
   const seen = new Set();
   rows = rows.filter(r => (seen.has(r.po) ? false : seen.add(r.po)));
-  return { rows, method, fuelHint: fuelHint(plain) };
+  return { rows, method, fuelHint: fuelHint(`${subject || ''}\n${plain}`) };
 }
 
 // Normalise a PO for duplicate checks: PO48-2610-0010 == P048-2610-10.
@@ -189,4 +189,53 @@ function matchVessel(entity, name) {
   return { vessel: String(name).trim().toUpperCase(), note: `vessel "${name}" not in this entity's vessel list` };
 }
 
-module.exports = { parsePOEmail, parseQty, normPO, initials, matchEntity, matchVessel };
+// PO prefix = the client entity's PO series: PO25-… is AMN, PO43-… is BTS.
+const poPrefix = (po) => (normPO(po).match(/^P(\d+)-/) || [])[1] || '';
+
+// Find the entity for one email row. Tries, in order:
+//   1. the entity code in the email (AMN → PT Aman Maritim Nusantara);
+//      if the code fits several entities, the one owning the vessel;
+//   2. the vessel — the one entity in Clients that has this vessel;
+//   3. the PO series — earlier sales orders with the same PO prefix all
+//      belong to one entity.
+// Steps 2–3 add a note so the reviewer checks the guess.
+// history: [{ galleyPoRef, clientId, entityId }] of existing sales orders.
+function resolveEntity(clients, { code, vessel, po }, history = []) {
+  const all = [];
+  for (const cl of clients || []) for (const e of cl.entities || []) all.push({ client: cl, entity: e });
+  const hasVessel = (h) => !!vessel && (h.entity.vessels || []).some(v => squash(v.name) === squash(vessel));
+  const notes = [];
+
+  const byCode = matchEntity(clients, code);
+  if (byCode.match) return { match: byCode.match, notes };
+  if (code) {
+    const c = String(code).trim().toUpperCase();
+    const multi = all.filter(h => (h.entity.code || '').toUpperCase() === c || initials(h.entity.name) === c);
+    const narrowed = multi.filter(hasVessel);
+    if (narrowed.length === 1) return { match: narrowed[0], notes };
+  }
+  notes.push(byCode.note);
+
+  const viaVessel = all.filter(hasVessel);
+  if (viaVessel.length === 1) {
+    notes.push(`entity taken from the vessel list (${viaVessel[0].entity.name}) — check`);
+    return { match: viaVessel[0], notes };
+  }
+
+  const pre = poPrefix(po);
+  if (pre) {
+    const ids = new Set(history.filter(h => h.entityId && poPrefix(h.galleyPoRef) === pre).map(h => `${h.clientId}|${h.entityId}`));
+    if (ids.size === 1) {
+      const [cid, eid] = [...ids][0].split('|');
+      const hit = all.find(h => h.client.id === cid && h.entity.id === eid);
+      if (hit) {
+        notes.push(`entity taken from earlier ${String(po).split("-")[0].toUpperCase()}-… orders (${hit.entity.name}) — check`);
+        return { match: hit, notes };
+      }
+    }
+  }
+  return { match: null, notes };
+}
+
+module.exports = { parsePOEmail, parseQty, normPO, initials, matchEntity, matchVessel,
+  resolveEntity, isOfficialPO, poNumbers, fuelHint };
