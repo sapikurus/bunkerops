@@ -265,9 +265,12 @@ export default function Invoicing({ role, user }) {
   // ---- Reconciliation report (options panel → PDF / Excel) ---------------
   // Uses the filtered rows of the active cargo tab; the panel chooses scope,
   // columns and whether prices appear.
+  // Its own date range lives in the panel, so it gets the rows filtered by
+  // everything except the page's date range (which only seeds the panel's).
   const [reconOpen, setReconOpen] = useState(false);
-  const reconClientLabel = fClient || (new Set(filteredRows.map(r => r.client)).size === 1 ? filteredRows[0].client : 'All clients');
-  const reconPeriod = (fFrom || fTo) ? `${fFrom || '…'} to ${fTo || '…'}` : 'All dates';
+  const reconBaseRows = useMemo(() => cargoRows.filter(r =>
+    (!fClient || r.client === fClient) && (!fVessel || r.vessel === fVessel) && (!fStatus || r.soStatus === fStatus)),
+    [cargoRows, fClient, fVessel, fStatus]);
 
   return (
     <div style={{ padding: narrow ? 16 : 40, maxWidth: 1200 }}>
@@ -302,7 +305,7 @@ export default function Invoicing({ role, user }) {
 
       {/* Reconciliation report options (uses the filters below) */}
       {reconOpen && (
-        <ReconReport rows={filteredRows} clientLabel={reconClientLabel} period={reconPeriod}
+        <ReconReport rows={reconBaseRows} clientFilter={fClient} initialFrom={fFrom} initialTo={fTo}
           statusLabel={st => SO_STATUS_LABELS[st] || st} onClose={() => setReconOpen(false)} />
       )}
 

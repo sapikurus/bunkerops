@@ -16,7 +16,7 @@ const loadOpts = () => {
 };
 const saveOpts = (o) => { try { localStorage.setItem(STORE_KEY, JSON.stringify(o)); } catch { /* ignore */ } };
 
-export default function ReconReport({ rows, clientLabel, period, statusLabel, onClose }) {
+export default function ReconReport({ rows, clientFilter, initialFrom = '', initialTo = '', statusLabel, onClose }) {
   const saved = loadOpts() || {};
   const [scope, setScope]   = useState(RECON_SCOPES[saved.scope] ? saved.scope : 'unpriced');
   const [cols, setCols]     = useState(Array.isArray(saved.cols) ? saved.cols : [...RECON_DEFAULT_COLS, ...RECON_DEFAULT_PRICE_COLS]);
@@ -25,7 +25,22 @@ export default function ReconReport({ rows, clientLabel, period, statusLabel, on
   const [busy, setBusy]     = useState('');
   const [err, setErr]       = useState('');
 
-  const picked = useMemo(() => reconRowsFor(rows, scope), [rows, scope]);
+  // Date range for the report: by BAST (delivery) date or by SO date.
+  const [dateBy, setDateBy] = useState(saved.dateBy === 'soDate' ? 'soDate' : 'bastDate');
+  const [from, setFrom]     = useState(initialFrom);
+  const [to, setTo]         = useState(initialTo);
+
+  const picked = useMemo(() => reconRowsFor(rows, scope).filter(r => {
+    const d = r[dateBy] || '';
+    if (from && (!d || d < from)) return false;
+    if (to && (!d || d > to)) return false;
+    return true;
+  }), [rows, scope, dateBy, from, to]);
+  const clientLabel = clientFilter ||
+    (picked.length && new Set(picked.map(r => r.client)).size === 1 ? picked[0].client : 'All clients');
+  const dateName = dateBy === 'soDate' ? 'SO date' : 'BAST date';
+  const period = (from || to) ? `${from || '…'} to ${to || '…'}` : 'All dates';
+  const undatedOut = (from || to) && dateBy === 'bastDate' && scope === 'all';
   const pricedCount = picked.filter(r => r.priced).length;
   const toggleCol = (k) => setCols(c => (c.includes(k) ? c.filter(x => x !== k) : [...c, k]));
   const shownCols = RECON_COLUMNS.filter(c => cols.includes(c.key) && (prices || !c.price));
@@ -34,9 +49,9 @@ export default function ReconReport({ rows, clientLabel, period, statusLabel, on
     if (picked.length === 0) { setErr('No bunkerings match this choice and the current filters.'); return; }
     if (shownCols.length === 0) { setErr('Tick at least one column.'); return; }
     setErr(''); setBusy(kind);
-    saveOpts({ scope, cols, prices, signatures: sigs });
+    saveOpts({ scope, cols, prices, signatures: sigs, dateBy });
     try {
-      const model = buildReconModel(picked, { scope, cols, prices, signatures: sigs, clientLabel, period, statusLabel });
+      const model = buildReconModel(picked, { scope, cols, prices, signatures: sigs, clientLabel, period, dateName, statusLabel });
       if (kind === 'pdf') await downloadReconPdf(model);
       else await downloadReconXlsx(model);
     } catch (e) {
@@ -61,8 +76,8 @@ export default function ReconReport({ rows, clientLabel, period, statusLabel, on
         <span onClick={onClose} style={{ color: T.textDim, cursor: 'pointer', fontSize: 12 }}>✕</span>
       </div>
       <div style={{ fontSize: 11, color: T.textDim, marginBottom: 14, lineHeight: 1.6 }}>
-        For matching BunkerOps with the buyer. Uses the filters below (company, vessel, delivery dates, status) —
-        currently <b style={{ color: T.text }}>{clientLabel}</b>, {period}.
+        For matching BunkerOps with the buyer. Also follows the company, vessel and status filters below —
+        currently <b style={{ color: T.text }}>{clientLabel}</b>.
       </div>
 
       <div style={{ display: 'flex', gap: 14, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 14 }}>
@@ -72,11 +87,35 @@ export default function ReconReport({ rows, clientLabel, period, statusLabel, on
             {Object.entries(RECON_SCOPES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
           </select>
         </div>
+        <div>
+          <label style={s.label}>Date by</label>
+          <select value={dateBy} onChange={e => setDateBy(e.target.value)} style={{ ...s.input, width: 150, fontSize: 11 }}>
+            <option value="bastDate">BAST date</option>
+            <option value="soDate">SO date</option>
+          </select>
+        </div>
+        <div>
+          <label style={s.label}>From</label>
+          <input type="date" value={from} onChange={e => setFrom(e.target.value)} style={{ ...s.input, width: 150, fontSize: 11 }} />
+        </div>
+        <div>
+          <label style={s.label}>To</label>
+          <input type="date" value={to} onChange={e => setTo(e.target.value)} style={{ ...s.input, width: 150, fontSize: 11 }} />
+        </div>
+        {(from || to) && (
+          <button onClick={() => { setFrom(''); setTo(''); }} style={{ ...s.btn('ghost'), fontSize: 11 }}>ALL DATES</button>
+        )}
         <div style={{ fontSize: 11, color: T.textDim, paddingBottom: 8 }}>
           <b style={{ color: T.text }}>{picked.length}</b> line{picked.length === 1 ? '' : 's'}
           {scope !== 'unpriced' && <> · {pricedCount} priced</>}
         </div>
       </div>
+
+      {undatedOut && (
+        <div style={{ fontSize: 10, color: T.textFaint, marginTop: -8, marginBottom: 12 }}>
+          Sales orders without a BAST have no BAST date, so this date range leaves them out — use "SO date" to include them.
+        </div>
+      )}
 
       <div style={{ fontSize: 10, color: T.textDim, letterSpacing: 1.2, marginBottom: 6 }}>COLUMNS</div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 14px', marginBottom: 12 }}>

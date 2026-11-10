@@ -85,7 +85,7 @@ export function buildReconModel(rows, o) {
   return {
     title: 'BUNKER DELIVERY RECONCILIATION',
     subtitle: `${scope.sub} — for reconciliation between PT Petroprima Sejahtera and the buyer.`,
-    meta: [['Client', o.clientLabel], ['Period (BAST date)', o.period], ['Lines', String(out.length)], ['Generated', now.toLocaleString('id-ID')]],
+    meta: [['Client', o.clientLabel], [`Period (${o.dateName || 'BAST date'})`, o.period], ['Lines', String(out.length)], ['Generated', now.toLocaleString('id-ID')]],
     cols, rows: out, totals, notes, signatures: !!o.signatures,
     fileBase: ['Reconciliation', slug(o.clientLabel), ymdOf(now)].filter(Boolean).join('_'),
   };
